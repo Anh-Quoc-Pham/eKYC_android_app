@@ -16,9 +16,9 @@ import '../services/zkp_service.dart';
 enum LivenessAction { blink, smile }
 
 class FaceScanScreen extends StatefulWidget {
-  const FaceScanScreen({super.key, this.backendBaseUrl = AppConfig.apiBaseUrl});
+  const FaceScanScreen({super.key, this.backendBaseUrl});
 
-  final String backendBaseUrl;
+  final String? backendBaseUrl;
 
   @override
   State<FaceScanScreen> createState() => _FaceScanScreenState();
@@ -113,7 +113,9 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   @override
   void initState() {
     super.initState();
-    _zkpService = ZkpService(baseUrl: widget.backendBaseUrl);
+    _zkpService = ZkpService(
+      baseUrl: widget.backendBaseUrl ?? AppConfig.apiBaseUrl,
+    );
     _requiredAction = Random().nextBool()
         ? LivenessAction.blink
         : LivenessAction.smile;
