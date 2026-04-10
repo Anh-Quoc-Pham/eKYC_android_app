@@ -1,0 +1,27 @@
+{
+  "java.configuration.runtimes": [
+    {
+      "name": "JavaSE-1.8",
+      "path": "C:/Program Files/Android/Android Studio/jbr"
+    },
+    {
+      "name": "JavaSE-11",
+      "path": "C:/Program Files/Android/Android Studio/jbr"
+    },
+    {
+      "name": "JavaSE-17",
+      "path": "C:/Program Files/Android/Android Studio/jbr"
+    },
+    {
+      "name": "JavaSE-21",
+      "path": "C:/Program Files/Android/Android Studio/jbr",
+      "default": true
+    }
+  ],
+  "java.jdt.ls.java.home": "C:/Program Files/Android/Android Studio/jbr",
+  "java.import.gradle.java.home": "C:/Program Files/Android/Android Studio/jbr",
+  "jdk.jdkhome": "C:/Program Files/Android/Android Studio/jbr",
+  "jdk.project.jdkhome": "C:/Program Files/Android/Android Studio/jbr",
+  "cmake.ignoreCMakeListsMissing": true,
+  "java.configuration.updateBuildConfiguration": "disabled"
+}
