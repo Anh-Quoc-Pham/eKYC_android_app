@@ -20,6 +20,11 @@ class ReasonCodes {
   static const String livenessLowConfidence = 'LIVENESS_LOW_CONFIDENCE';
   static const String deviceTrustUnavailable = 'DEVICE_TRUST_UNAVAILABLE';
   static const String deviceTrustLow = 'DEVICE_TRUST_LOW';
+  static const String deviceTrustInvalidToken = 'DEVICE_TRUST_INVALID_TOKEN';
+  static const String deviceTrustTransientError =
+      'DEVICE_TRUST_TRANSIENT_ERROR';
+  static const String deviceTrustConfigurationError =
+      'DEVICE_TRUST_CONFIGURATION_ERROR';
   static const String sessionRetryLimit = 'SESSION_RETRY_LIMIT';
   static const String networkInterrupted = 'NETWORK_INTERRUPTED';
   static const String internalReviewRequired = 'INTERNAL_REVIEW_REQUIRED';
@@ -90,12 +95,24 @@ class DeviceTrustSignal {
     this.score,
     this.provider,
     this.detail,
+    this.integrityToken,
+    this.requestHash,
+    this.tokenSource,
+    this.errorCategory,
+    this.errorCode,
+    this.retryable = false,
   });
 
   final DeviceTrustStatus status;
   final double? score;
   final String? provider;
   final String? detail;
+  final String? integrityToken;
+  final String? requestHash;
+  final String? tokenSource;
+  final String? errorCategory;
+  final String? errorCode;
+  final bool retryable;
 
   Map<String, dynamic> toJson() {
     return {
@@ -103,6 +120,13 @@ class DeviceTrustSignal {
       'score': score,
       'provider': provider,
       'detail': detail,
+      if (integrityToken != null) 'integrity_token': integrityToken,
+      if (requestHash != null) 'request_hash': requestHash,
+      if (tokenSource != null) 'token_source': tokenSource,
+      if (errorCategory != null) 'error_category': errorCategory,
+      if (errorCode != null) 'error_code': errorCode,
+      'retryable': retryable,
+      'token_present': (integrityToken ?? '').isNotEmpty,
     };
   }
 

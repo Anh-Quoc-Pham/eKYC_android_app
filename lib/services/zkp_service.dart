@@ -86,6 +86,18 @@ class ZkpService {
   final Random _secureRandom = Random.secure();
   final AesGcm _aesGcm = AesGcm.with256bits();
 
+  String createClientCorrelationId() => _generateCorrelationId();
+
+  String buildIntegrityRequestHash({
+    required String idHash,
+    required String correlationId,
+    required int attemptCount,
+  }) {
+    final payload =
+        'ekyc_integrity_v1|${_normalizeIdHash(idHash)}|$attemptCount|$correlationId';
+    return sha256.convert(utf8.encode(payload)).toString();
+  }
+
   Future<ZkpKeyPair> ensureKeyPair() async {
     final privateRaw = await _secureStorage.read(key: _privateKeyStorageKey);
     final publicRaw = await _secureStorage.read(key: _publicKeyStorageKey);

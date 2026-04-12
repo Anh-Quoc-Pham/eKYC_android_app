@@ -5,6 +5,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+dependencies {
+    implementation("com.google.android.play:integrity:1.4.0")
+}
+
 android {
     namespace = "com.aq.ekyc.ekyc_app"
     compileSdk = flutter.compileSdkVersion

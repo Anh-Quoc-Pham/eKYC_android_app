@@ -34,6 +34,17 @@ class AppConfig {
     defaultValue: 'mock_unavailable',
   );
 
+  static const String _playIntegrityEnabledRaw = String.fromEnvironment(
+    'EKYC_PLAY_INTEGRITY_ENABLED',
+    defaultValue: 'true',
+  );
+
+  static const String _playIntegrityCloudProjectNumberRaw =
+      String.fromEnvironment(
+        'EKYC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER',
+        defaultValue: '',
+      );
+
   static AppEnvironment get environment {
     switch (_environmentRaw.toLowerCase()) {
       case 'prod':
@@ -85,6 +96,28 @@ class AppConfig {
 
   static bool get isProductionLike => environment != AppEnvironment.dev;
 
+  static bool get playIntegrityEnabled =>
+      _parseBool(_playIntegrityEnabledRaw, defaultValue: true);
+
+  static int? get playIntegrityCloudProjectNumber {
+    final raw = _playIntegrityCloudProjectNumberRaw.trim();
+    if (raw.isEmpty) {
+      return null;
+    }
+
+    final parsed = int.tryParse(raw);
+    if (parsed == null || parsed <= 0) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  static String get playIntegrityChannel => 'ekyc/play_integrity';
+
+  static bool get shouldUseRealPlayIntegrity =>
+      isProductionLike && playIntegrityEnabled;
+
   static String _normalizeAndValidate(
     String rawValue, {
     required String source,
@@ -105,5 +138,22 @@ class AppConfig {
     }
 
     return value.replaceAll(RegExp(r'/+$'), '');
+  }
+
+  static bool _parseBool(String raw, {required bool defaultValue}) {
+    switch (raw.trim().toLowerCase()) {
+      case '1':
+      case 'true':
+      case 'yes':
+      case 'on':
+        return true;
+      case '0':
+      case 'false':
+      case 'no':
+      case 'off':
+        return false;
+      default:
+        return defaultValue;
+    }
   }
 }

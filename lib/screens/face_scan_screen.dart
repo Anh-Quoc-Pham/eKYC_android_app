@@ -144,11 +144,19 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
     try {
       _session.registerVerificationAttempt();
+      final requestCorrelationId = _zkpService.createClientCorrelationId();
+      final integrityRequestHash = _zkpService.buildIntegrityRequestHash(
+        idHash: _activeIdHash,
+        correlationId: requestCorrelationId,
+        attemptCount: _session.verificationAttemptCount,
+      );
 
       final cccd = await _secureStorage.read(key: 'ekyc.cccd') ?? '';
       final dateOfBirth =
           await _secureStorage.read(key: 'ekyc.date_of_birth') ?? '';
-      final trustSignal = await _deviceTrustService.evaluate();
+      final trustSignal = await _deviceTrustService.evaluate(
+        requestHash: integrityRequestHash,
+      );
 
       final riskContext = VerificationRiskContext(
         ocr: _session.ocrRiskSignals,
@@ -176,6 +184,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         idHash: _activeIdHash,
         pii: piiPayload,
         riskContext: riskContext,
+        correlationId: requestCorrelationId,
         enrollIfNeeded: true,
       );
 
