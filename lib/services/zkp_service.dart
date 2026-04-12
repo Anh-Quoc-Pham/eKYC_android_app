@@ -7,6 +7,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../config/app_config.dart';
 import '../models/decision_models.dart';
 
 class ZkpKeyPair {
@@ -67,8 +68,12 @@ class ZkpService {
     required this.baseUrl,
     FlutterSecureStorage? secureStorage,
     http.Client? httpClient,
+    String? apiKey,
+    String? bearerToken,
   }) : _secureStorage = secureStorage ?? const FlutterSecureStorage(),
-       _httpClient = httpClient ?? http.Client();
+       _httpClient = httpClient ?? http.Client(),
+       _apiKey = apiKey ?? AppConfig.apiClientApiKey,
+       _bearerToken = bearerToken ?? AppConfig.apiClientBearerToken;
 
   static final BigInt _p = BigInt.parse(_pHex, radix: 16);
   static final BigInt _q = (_p - BigInt.one) >> 1;
@@ -83,6 +88,8 @@ class ZkpService {
   final String baseUrl;
   final FlutterSecureStorage _secureStorage;
   final http.Client _httpClient;
+  final String? _apiKey;
+  final String? _bearerToken;
   final Random _secureRandom = Random.secure();
   final AesGcm _aesGcm = AesGcm.with256bits();
 
@@ -277,12 +284,22 @@ class ZkpService {
     );
 
     try {
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        'X-Correlation-ID': requestCorrelationId,
+      };
+
+      if ((_apiKey ?? '').isNotEmpty) {
+        headers['X-EKYC-API-Key'] = _apiKey!;
+      }
+
+      if ((_bearerToken ?? '').isNotEmpty) {
+        headers['Authorization'] = 'Bearer ${_bearerToken!}';
+      }
+
       final response = await _httpClient.post(
         uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Correlation-ID': requestCorrelationId,
-        },
+        headers: headers,
         body: jsonEncode(requestBody),
       );
 

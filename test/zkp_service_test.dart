@@ -167,5 +167,77 @@ void main() {
       expect(requestDeviceTrust['token_source'], 'play_integrity_standard');
       expect(requestDeviceTrust['token_present'], isTrue);
     });
+
+    test('attaches API key header when configured', () async {
+      const correlationId = 'cid-api-key-header-001';
+      final client = _RecordingClient(
+        statusCode: 200,
+        responseBody: {
+          'verified': true,
+          'reason': 'ok',
+          'score': 1.0,
+          'decision_status': 'PASS',
+          'reason_codes': <String>[],
+          'user_message_key': 'decision.pass',
+          'retry_allowed': false,
+          'retry_reason': 'none',
+          'retry_policy': 'NO_RETRY',
+          'correlation_id': correlationId,
+          'risk_signals': <String, dynamic>{},
+        },
+      );
+
+      final service = ZkpService(
+        baseUrl: 'http://localhost:8000',
+        httpClient: client,
+        apiKey: 'pilot-shared-api-key',
+      );
+
+      await service.enroll(
+        idHash: 'd' * 64,
+        encryptedPii: 'ciphertext_payload',
+        publicKey: BigInt.from(13),
+        correlationId: correlationId,
+      );
+
+      expect(client.lastHeaders?['X-EKYC-API-Key'], 'pilot-shared-api-key');
+      expect(client.lastHeaders?['Authorization'], isNull);
+    });
+
+    test('attaches Bearer header when configured', () async {
+      const correlationId = 'cid-bearer-header-001';
+      final client = _RecordingClient(
+        statusCode: 200,
+        responseBody: {
+          'verified': true,
+          'reason': 'ok',
+          'score': 1.0,
+          'decision_status': 'PASS',
+          'reason_codes': <String>[],
+          'user_message_key': 'decision.pass',
+          'retry_allowed': false,
+          'retry_reason': 'none',
+          'retry_policy': 'NO_RETRY',
+          'correlation_id': correlationId,
+          'risk_signals': <String, dynamic>{},
+        },
+      );
+
+      final service = ZkpService(
+        baseUrl: 'http://localhost:8000',
+        httpClient: client,
+        bearerToken: 'pilot-bearer-token',
+      );
+
+      await service.enroll(
+        idHash: 'e' * 64,
+        encryptedPii: 'ciphertext_payload',
+        publicKey: BigInt.from(17),
+        correlationId: correlationId,
+      );
+
+      expect(client.lastHeaders?['Authorization'], 'Bearer pilot-bearer-token');
+      expect(client.lastHeaders?['X-EKYC-API-Key'], isNull);
+    });
   });
 }

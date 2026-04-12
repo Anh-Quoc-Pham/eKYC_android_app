@@ -45,6 +45,16 @@ class AppConfig {
         defaultValue: '',
       );
 
+  static const String _apiClientApiKeyRaw = String.fromEnvironment(
+    'EKYC_API_KEY',
+    defaultValue: '',
+  );
+
+  static const String _apiClientBearerTokenRaw = String.fromEnvironment(
+    'EKYC_API_BEARER_TOKEN',
+    defaultValue: '',
+  );
+
   static AppEnvironment get environment {
     switch (_environmentRaw.toLowerCase()) {
       case 'prod':
@@ -117,6 +127,25 @@ class AppConfig {
 
   static bool get shouldUseRealPlayIntegrity =>
       isProductionLike && playIntegrityEnabled;
+
+  static String? get apiClientApiKey {
+    final value = _apiClientApiKeyRaw.trim();
+    if (value.isEmpty) {
+      return null;
+    }
+    return value;
+  }
+
+  static String? get apiClientBearerToken {
+    final value = _apiClientBearerTokenRaw.trim();
+    if (value.isEmpty) {
+      return null;
+    }
+    return value;
+  }
+
+  static bool get hasApiClientCredentials =>
+      apiClientApiKey != null || apiClientBearerToken != null;
 
   static String _normalizeAndValidate(
     String rawValue, {

@@ -38,6 +38,17 @@ Expected response body:
 {"status":"ok"}
 ```
 
+Readiness check:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8000/ready
+```
+
+Notes:
+
+- `/health` reports liveness.
+- `/ready` reports security/config posture (`ready` or `not_ready`) for pilot operations.
+
 ## 2) Environment Configuration (dev/staging/prod)
 
 `lib/config/app_config.dart` now resolves API endpoint by environment:
@@ -59,6 +70,8 @@ Play Integrity app-side settings:
 - `EKYC_PLAY_INTEGRITY_ENABLED=true|false`
 - `EKYC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=<number>`
 - `EKYC_DEVICE_TRUST_MODE=mock_trusted|mock_low|mock_unavailable` (dev only)
+- `EKYC_API_KEY=<shared-api-key>` (optional, for backend auth mode `api_key` or `either`)
+- `EKYC_API_BEARER_TOKEN=<shared-bearer-token>` (optional, for backend auth mode `bearer` or `either`)
 
 Backend Play Integrity settings:
 
@@ -67,6 +80,24 @@ Backend Play Integrity settings:
 - `EKYC_PLAY_INTEGRITY_ANDROID_PACKAGE=<applicationId>`
 - `EKYC_PLAY_INTEGRITY_CREDENTIALS_FILE=<service-account-json-path>` or
 	`EKYC_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON=<inline-json>`
+
+Backend hardening settings:
+
+- `EKYC_CLIENT_AUTH_MODE=disabled|api_key|bearer|either`
+- `EKYC_CLIENT_API_KEY=<shared-secret>`
+- `EKYC_CLIENT_BEARER_TOKEN=<shared-token>`
+- `EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV=true|false` (default false)
+- `EKYC_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com`
+- `EKYC_CORS_ALLOW_CREDENTIALS=true|false`
+- `EKYC_RATE_LIMIT_ENROLL_MAX_REQUESTS=<int>`
+- `EKYC_RATE_LIMIT_ENROLL_WINDOW_SECONDS=<int>`
+- `EKYC_RATE_LIMIT_VERIFY_MAX_REQUESTS=<int>`
+- `EKYC_RATE_LIMIT_VERIFY_WINDOW_SECONDS=<int>`
+
+Non-dev defaults are intentionally stricter:
+
+- If auth mode is not configured securely, protected routes can return non-ready/denied behavior.
+- Non-dev `disabled` auth mode requires explicit override via `EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV=true`.
 
 ## 3) Run Flutter App
 
@@ -102,6 +133,12 @@ Staging with Play Integrity example:
 flutter run --dart-define=EKYC_ENV=staging --dart-define=EKYC_API_BASE_URL_STAGING=https://staging.example.com --dart-define=EKYC_PLAY_INTEGRITY_ENABLED=true --dart-define=EKYC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=1234567890123
 ```
 
+Staging with backend API-key protection example:
+
+```powershell
+flutter run --dart-define=EKYC_ENV=staging --dart-define=EKYC_API_BASE_URL_STAGING=https://staging.example.com --dart-define=EKYC_PLAY_INTEGRITY_ENABLED=true --dart-define=EKYC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=1234567890123 --dart-define=EKYC_API_KEY=pilot-shared-key
+```
+
 ## 4) Backend End-to-End Tests
 
 From workspace root:
@@ -125,6 +162,12 @@ Android native compile validation:
 
 ```powershell
 flutter build apk --debug --dart-define=EKYC_ENV=dev --dart-define=EKYC_API_BASE_URL_DEV=http://10.0.2.2:8000
+```
+
+Release-signing guardrail example:
+
+```powershell
+flutter build apk --release -Pekyc.enforceReleaseSigning=true -Pekyc.allowDebugReleaseSigning=false --dart-define=EKYC_ENV=prod --dart-define=EKYC_API_BASE_URL_PROD=https://api.example.com
 ```
 
 ## 6) CI (GitHub Actions)
