@@ -48,5 +48,5 @@ jobs:
           python -m pip install -r backend/requirements.txt
           python -m pip install -r backend/requirements-dev.txt
 
-      - name: Run backend e2e tests
-        run: pytest -q backend/tests/test_api_e2e.py
+      - name: Run backend tests
+        run: pytest -q backend/tests

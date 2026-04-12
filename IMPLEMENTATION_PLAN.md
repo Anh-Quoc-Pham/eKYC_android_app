@@ -1,115 +1,120 @@
 # IMPLEMENTATION_PLAN
 
 ## Phase
-- Current phase: **Phase 2 - Real Play Integrity Integration**
-- Goal: replace non-dev trust scaffold with real Android -> backend Play Integrity verification path while preserving phase-1 decision/audit baseline.
-- Status: **Implemented in repository with external setup dependencies still required for production activation**.
+- Current phase: Phase 3 - Backend Hardening, Android Release Readiness, Operational Readiness.
+- Goal: move the Android-first pilot baseline from feature-complete trust integration toward controlled pilot and pre-production readiness.
+- Status: Completed in repository scope.
 
-## 1. Findings From Current Baseline
+## 1. Findings Summary (Pre-implementation)
 
-### Frontend insertion points
-- Verify trigger is in `lib/screens/face_scan_screen.dart` via `ZkpService.submitPhase3(...)`.
-- Existing trust path is `DeviceTrustService.evaluate()` in `lib/services/device_trust_service.dart`.
-- Current trust model does not carry raw integrity token; only status/score/provider/detail in `lib/models/decision_models.dart`.
-- Config is centralized in `lib/config/app_config.dart` with env separation (`dev/staging/prod`).
-- Android native entrypoint exists only as `MainActivity` with no platform channel yet.
+### FastAPI sensitive-surface baseline
+- Sensitive routes were POST /enroll and POST /verify.
+- Missing controls before phase-3:
+   - no service-level endpoint auth,
+   - no explicit CORS policy,
+   - no readiness diagnostics endpoint,
+   - rate limiting only existed for /verify.
 
-### Backend insertion points
-- Request models and verify orchestration are in `backend/main.py`.
-- Decision mapping is centralized in `backend/decision_engine.py` and already enforces trust-signal presence for verify.
-- Structured audit logging and redaction are in `backend/audit_logging.py`.
-- There is currently no server-side Play Integrity token verification module.
+### Config and safety baseline
+- App and backend already had environment-driven integrity settings.
+- Non-dev secure defaults were not enforced for endpoint access control.
+- Error surfaces for unhandled exceptions were not normalized for pilot-safe responses.
 
-## 2. Architecture Insertion Points
+### Android release baseline
+- Release build used debug signing fallback by default.
+- No explicit release-signing enforcement guardrail existed.
 
-- Android-side token acquisition is inserted at trust provider layer (`DeviceTrustService`) and invoked only in verify flow entrypoint (`FaceScanScreen`).
-- Backend-side token verification is inserted at `/verify` orchestration before ZKP decision evaluation.
-- Existing decision engine remains the only policy engine; Play Integrity verdict is normalized into `device_trust` signal consumed by decision logic.
+### Documentation baseline
+- Integrity and staging docs existed from phase-2.
+- Backend hardening spec, ops runbook, pilot triage, and release checklist were still missing.
 
-## 3. File/Module Targets
+## 2. Assumptions Used
+- Android-only scope remains; iOS stays out of scope.
+- Pilot needs practical hardening, not enterprise IAM architecture.
+- Phase-1 and phase-2 behavior should stay backward-compatible unless secure non-dev defaults require explicit tightening.
+- External ownership (secret governance, Play Console operations, signing custody, alert routing) remains outside repo scope.
 
-### App / Android
-- `android/app/build.gradle.kts`
-- `android/app/src/main/kotlin/com/aq/ekyc/ekyc_app/MainActivity.kt`
-- `lib/config/app_config.dart`
-- `lib/models/decision_models.dart`
-- `lib/services/device_trust_service.dart`
-- `lib/services/zkp_service.dart`
-- `lib/screens/face_scan_screen.dart`
-- `test/device_trust_service_test.dart`
-- `test/zkp_service_test.dart`
+## 3. What Was Implemented
 
-### Backend
-- `backend/main.py`
-- `backend/decision_engine.py`
-- `backend/integrity_verifier.py` (new)
-- `backend/requirements.txt`
-- `backend/tests/test_decision_engine.py`
-- `backend/tests/test_api_e2e.py`
-- `backend/tests/test_integrity_verifier.py` (new)
+### A) Backend hardening
+- Added env-driven service security settings in backend/main.py.
+- Added protected-route auth middleware for /enroll and /verify.
+   - auth modes: disabled, api_key, bearer, either
+   - non-dev defaults now tighten to secure behavior
+- Added explicit CORS middleware with environment-driven origin policy.
+- Added route-aware rate limiting for both /enroll and /verify.
+- Added /ready endpoint for non-secret readiness posture checks.
+- Added safer unhandled exception response with correlation_id preservation.
+- Preserved privacy-safe audit behavior and correlation logging continuity.
 
-### Documentation
-- `IMPLEMENTATION_PLAN.md`
-- `INTEGRITY_INTEGRATION_NOTES.md`
-- `ANDROID_PILOT_READINESS.md`
-- `DECISION_ENGINE_SPEC.md`
-- `PLAY_INTEGRITY_PHASE2.md` (new)
+### B) Android release readiness and app compatibility
+- Added app env support for backend auth headers in lib/config/app_config.dart.
+- Updated lib/services/zkp_service.dart to attach:
+   - X-EKYC-API-Key when configured
+   - Authorization Bearer token when configured
+- Added release signing guardrails in android/app/build.gradle.kts:
+   - optional keystore.properties-based release signing config
+   - enforceable release-signing checks via gradle properties
 
-## 4. Assumptions
-- Android-only scope continues; iOS integrity path remains out-of-scope.
-- External Google Cloud/Play Console setup may be absent during local testing.
-- Repo code must remain mergeable and safe when production credentials are missing.
-- Existing decision and audit contracts remain backward compatible.
+### C) Operational readiness package
+- Added new docs:
+   - BACKEND_HARDENING_SPEC.md
+   - ANDROID_RELEASE_READINESS.md
+   - OPS_READINESS_RUNBOOK.md
+   - PILOT_SUPPORT_TRIAGE.md
+   - RELEASE_CHECKLIST.md
+- Updated operational/readiness docs:
+   - README.md
+   - AUDIT_AND_LOGGING_SPEC.md
+   - ANDROID_PILOT_READINESS.md
+- Tightened CI backend coverage to run full backend tests.
 
-## 5. Risk Notes
-- Native Play Integrity API integration may fail without Play services/Play Store runtime support.
-- Misconfiguration in non-dev must result in non-pass outcomes, never implicit trust.
-- Token decode failures must map to deterministic review/reject policy.
-- External setup dependencies must be explicit in docs to avoid false completion claims.
+## 4. Test and Validation Updates
 
-## 6. What Changed (Implemented In Repo)
+### New and updated tests
+- Added backend/tests/test_hardening_baseline.py for:
+   - allow/deny auth behavior,
+   - non-dev secure default enforcement,
+   - CORS preflight behavior,
+   - /enroll rate-limit behavior,
+   - readiness posture checks.
+- Updated backend/tests/test_api_e2e.py for compatibility with new auth middleware in non-dev configuration test.
+- Added Flutter tests in test/zkp_service_test.dart for API key and bearer header attachment.
 
-### Android / Flutter
-- Added real native Play Integrity bridge through MethodChannel in `MainActivity` with:
-   - provider preparation lifecycle,
-   - token request lifecycle,
-   - structured failure categories (`play_services_unavailable`, `transient_error`, `provider_invalid`, `configuration_error`, `unexpected_error`).
-- Extended trust model (`DeviceTrustSignal`) to carry integrity evidence and failure metadata.
-- Extended `DeviceTrustService`:
-   - dev: explicit mock mode preserved,
-   - non-dev: real MethodChannel provider if configured,
-   - fail-safe unavailable when configuration missing or provider fails.
-- Added deterministic integrity request-hash binding helpers in `ZkpService` and wired correlation-id + request-hash usage from `FaceScanScreen`.
+### Validation results
+- flutter analyze: passed
+- flutter test: passed (20 tests)
+- pytest -q backend/tests: passed (37 tests)
+- flutter build apk --debug: passed
 
-### Backend
-- Added `backend/integrity_verifier.py`:
-   - verifier modes: `mock` and `google`,
-   - normalized verdicts: `trusted`, `untrusted`, `unavailable`, `invalid`, `transient_error`, `configuration_error`,
-   - request hash/package validation and verdict normalization into existing trust signal.
-- Integrated verifier into `backend/main.py` verify flow before decision evaluation.
-- Preserved privacy guarantees:
-   - no raw integrity token in audit metadata,
-   - dedicated metadata filtering for integrity log events,
-   - redaction rules expanded defensively.
-- Extended decision taxonomy with integrity-specific reason codes while preserving existing policy structure.
+## 5. Implemented vs Scaffolded vs External
 
-### Tests
-- Added backend verifier unit tests (`test_integrity_verifier.py`).
-- Extended backend e2e tests for missing/invalid/transient/config integrity scenarios.
-- Extended Flutter tests for:
-   - MethodChannel provider behavior,
-   - token attachment in service payload,
-   - existing decision mapping regressions.
+### Implemented in repo
+- Backend protected-route auth, CORS policy, dual-route rate limiting, readiness endpoint.
+- App-to-backend auth header support.
+- Android release-signing guardrails in Gradle.
+- Ops runbook, pilot triage guide, release checklist, and updated readiness docs.
 
-## 7. What Remains Manual (Outside Repo)
-- Google Cloud and Play Console setup for Play Integrity API trust chain.
-- Service account provisioning and secure credentials distribution to backend runtime.
-- Non-dev environment variable rollout for verifier mode/package/credentials.
-- Security sign-off for integrity verdict thresholds and rollout policy.
-- Release signing/Play Console operational steps (separate from code integration).
+### Scaffolded only
+- In-memory rate limiting suitable for single-instance pilot baseline.
+- Shared-secret auth model suitable for pilot baseline.
 
-## 8. Validation Status
-- Flutter analyze: passed.
-- Flutter tests: passed.
-- Backend tests: passed.
-- Android debug build: passed (`flutter build apk --debug`).
+### Requires human or external setup
+- Secret provisioning and rotation process ownership.
+- keystore.properties material and CI secret injection.
+- Play Console release operations.
+- Alert routing destinations and on-call ownership.
+- Staging and pilot exercises for runtime verification.
+
+## 6. Remaining Manual Tasks
+1. Configure non-dev backend auth secrets and auth mode policy.
+2. Configure EKYC_ALLOWED_ORIGINS for staging/prod domains if web-origin access is required.
+3. Complete keystore management and enable strict release signing in CI.
+4. Configure centralized logging/alert routing and incident ownership.
+5. Execute controlled staging validation and pilot signoff runbooks.
+
+## 7. Known Risks
+- In-memory limiter is not multi-instance/distributed-safe.
+- Shared-secret auth requires disciplined secret rotation.
+- /ready endpoint is not network-restricted in code; deployment controls should restrict exposure.
+- External cloud/release operations remain critical path for production readiness.
