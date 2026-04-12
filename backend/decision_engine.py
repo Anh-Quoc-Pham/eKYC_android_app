@@ -29,6 +29,9 @@ class ReasonCodes:
     LIVENESS_LOW_CONFIDENCE = "LIVENESS_LOW_CONFIDENCE"
     DEVICE_TRUST_UNAVAILABLE = "DEVICE_TRUST_UNAVAILABLE"
     DEVICE_TRUST_LOW = "DEVICE_TRUST_LOW"
+    DEVICE_TRUST_INVALID_TOKEN = "DEVICE_TRUST_INVALID_TOKEN"
+    DEVICE_TRUST_TRANSIENT_ERROR = "DEVICE_TRUST_TRANSIENT_ERROR"
+    DEVICE_TRUST_CONFIGURATION_ERROR = "DEVICE_TRUST_CONFIGURATION_ERROR"
     SESSION_RETRY_LIMIT = "SESSION_RETRY_LIMIT"
     NETWORK_INTERRUPTED = "NETWORK_INTERRUPTED"
     INTERNAL_REVIEW_REQUIRED = "INTERNAL_REVIEW_REQUIRED"
@@ -243,6 +246,9 @@ def _normalize_signals(risk_context: Mapping[str, Any] | None) -> dict[str, Any]
             "score": _safe_float(device_trust.get("score")),
             "provider": str(device_trust.get("provider", "")).strip(),
             "detail": str(device_trust.get("detail", "")).strip(),
+            "verification_status": str(
+                device_trust.get("verification_status", "")
+            ).strip(),
         }
 
     retry = risk_context.get("retry")
@@ -286,10 +292,22 @@ def _append_signal_reason_codes(reason_codes: list[str], signals: Mapping[str, A
     device_trust = signals.get("device_trust")
     if isinstance(device_trust, Mapping):
         status = str(device_trust.get("status", "unknown")).lower()
+        detail = str(device_trust.get("detail", "")).lower()
+        verification_status = str(device_trust.get("verification_status", "")).lower()
+
         if status in {"unavailable", "unknown"}:
             reason_codes.append(ReasonCodes.DEVICE_TRUST_UNAVAILABLE)
         elif status == "low":
             reason_codes.append(ReasonCodes.DEVICE_TRUST_LOW)
+
+        if verification_status == "invalid" or "invalid" in detail or "mismatch" in detail:
+            reason_codes.append(ReasonCodes.DEVICE_TRUST_INVALID_TOKEN)
+
+        if verification_status == "transient_error":
+            reason_codes.append(ReasonCodes.DEVICE_TRUST_TRANSIENT_ERROR)
+
+        if verification_status == "configuration_error":
+            reason_codes.append(ReasonCodes.DEVICE_TRUST_CONFIGURATION_ERROR)
 
     retry = signals.get("retry")
     if isinstance(retry, Mapping):

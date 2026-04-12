@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse
 
 from audit_logging import log_audit_event
 from decision_engine import DecisionResult, evaluate_decision, rate_limited_decision
+from integrity_verifier import verify_play_integrity
 
 # RFC 3526 - 2048-bit MODP Group prime.
 _P_HEX = (
@@ -76,6 +77,12 @@ class DeviceTrustSignals(BaseModel):
     score: float | None = Field(default=None, ge=0, le=1)
     provider: str | None = Field(default=None, min_length=1, max_length=128)
     detail: str | None = Field(default=None, max_length=256)
+    integrity_token: str | None = Field(default=None, min_length=16, max_length=20000)
+    request_hash: str | None = Field(default=None, min_length=16, max_length=256)
+    token_source: str | None = Field(default=None, min_length=1, max_length=128)
+    error_category: str | None = Field(default=None, min_length=1, max_length=64)
+    error_code: str | None = Field(default=None, min_length=1, max_length=64)
+    retryable: bool = False
 
 
 class RetrySignals(BaseModel):
@@ -191,6 +198,63 @@ def _risk_context_to_dict(
     if risk_context is None:
         return None
     return risk_context.model_dump(exclude_none=True)
+
+
+def _compute_integrity_request_hash(
+    *,
+    id_hash: str,
+    correlation_id: str,
+    attempt_count: int,
+) -> str:
+    payload = f"ekyc_integrity_v1|{id_hash}|{attempt_count}|{correlation_id}".encode(
+        "utf-8"
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _resolve_verified_device_trust_signal(
+    *,
+    id_hash: str,
+    correlation_id: str,
+    risk_context_dict: dict[str, Any],
+) -> dict[str, Any]:
+    retry_signals = risk_context_dict.get("retry")
+    if isinstance(retry_signals, dict):
+        attempt_count = int(retry_signals.get("attempt_count", 0) or 0)
+    else:
+        attempt_count = 0
+
+    expected_request_hash = _compute_integrity_request_hash(
+        id_hash=id_hash,
+        correlation_id=correlation_id,
+        attempt_count=attempt_count,
+    )
+
+    evidence = risk_context_dict.get("device_trust")
+    if not isinstance(evidence, dict):
+        evidence = None
+
+    verification_result = verify_play_integrity(
+        evidence=evidence,
+        correlation_id=correlation_id,
+        expected_request_hash=expected_request_hash,
+    )
+
+    return verification_result.to_device_trust_signal()
+
+
+def _device_trust_log_metadata(device_trust_signal: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "status": str(device_trust_signal.get("status", "")),
+        "score": device_trust_signal.get("score"),
+        "provider": str(device_trust_signal.get("provider", "")),
+        "detail": str(device_trust_signal.get("detail", "")),
+        "verification_status": str(device_trust_signal.get("verification_status", "")),
+        "verifier_mode": str(device_trust_signal.get("verifier_mode", "")),
+        "retryable": bool(device_trust_signal.get("retryable", False)),
+        "token_present": bool(device_trust_signal.get("token_present", False)),
+        "error_code": str(device_trust_signal.get("error_code", "")),
+    }
 
 
 def _resolve_correlation_id(request: Request, body_correlation_id: str | None) -> str:
@@ -401,7 +465,7 @@ def enroll(request: Request, payload: EnrollRequest) -> dict[str, Any]:
 @app.post("/verify")
 def verify(request: Request, payload: VerifyRequest) -> dict[str, Any]:
     correlation_id = _resolve_correlation_id(request, payload.correlation_id)
-    risk_context_dict = _risk_context_to_dict(payload.risk_context)
+    risk_context_dict = _risk_context_to_dict(payload.risk_context) or {}
 
     id_hash = payload.id_hash.lower()
     log_audit_event(
@@ -424,18 +488,24 @@ def verify(request: Request, payload: VerifyRequest) -> dict[str, Any]:
             metadata={"face": risk_context_dict.get("face", {})},
         )
 
-    if risk_context_dict and "device_trust" in risk_context_dict:
-        log_audit_event(
-            event_name="integrity_check_result",
-            correlation_id=correlation_id,
-            metadata={"device_trust": risk_context_dict.get("device_trust", {})},
-        )
-
     if not _is_valid_hex_sha256(id_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="id_hash phải là SHA-256 hex (64 ký tự).",
         )
+
+    verified_device_trust = _resolve_verified_device_trust_signal(
+        id_hash=id_hash,
+        correlation_id=correlation_id,
+        risk_context_dict=risk_context_dict,
+    )
+    risk_context_dict["device_trust"] = verified_device_trust
+
+    log_audit_event(
+        event_name="integrity_check_result",
+        correlation_id=correlation_id,
+        metadata={"device_trust": _device_trust_log_metadata(verified_device_trust)},
+    )
 
     proof = payload.proof
     commitment = _parse_positive_int(proof.commitment, "proof.commitment")

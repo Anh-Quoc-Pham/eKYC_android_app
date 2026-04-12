@@ -16,6 +16,9 @@ _SENSITIVE_FIELD_KEYWORDS = {
     "iv",
     "tag",
     "aad_hash",
+    "integrity_token",
+    "play_integrity_token",
+    "attestation_token",
 }
 
 
