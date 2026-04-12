@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 import hashlib
 import sqlite3
-from threading import Lock
 import time
 from pathlib import Path
+from threading import Lock
+from typing import Any
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
+
+from audit_logging import log_audit_event
+from decision_engine import DecisionResult, evaluate_decision, rate_limited_decision
 
 # RFC 3526 - 2048-bit MODP Group prime.
 _P_HEX = (
@@ -37,17 +43,60 @@ VERIFY_RATE_LIMIT_WINDOW_SECONDS = 60
 _verify_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 _verify_rate_lock = Lock()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _init_db()
+    yield
+
+
 app = FastAPI(
     title="eKYC Phase 3 ZKP Backend",
     version="1.0.0",
     description="Privacy-first backend with Schnorr proof verification",
+    lifespan=lifespan,
 )
+
+
+class OcrRiskSignals(BaseModel):
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    field_mismatch: bool = False
+    glare_detected: bool = False
+    blur_detected: bool = False
+    crop_invalid: bool = False
+
+
+class FaceRiskSignals(BaseModel):
+    match_score: float | None = Field(default=None, ge=0, le=1)
+    liveness_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class DeviceTrustSignals(BaseModel):
+    status: str = Field(default="unknown", min_length=1)
+    score: float | None = Field(default=None, ge=0, le=1)
+    provider: str | None = Field(default=None, min_length=1, max_length=128)
+    detail: str | None = Field(default=None, max_length=256)
+
+
+class RetrySignals(BaseModel):
+    attempt_count: int = Field(default=0, ge=0)
+    max_attempts: int = Field(default=3, ge=1)
+
+
+class VerificationRiskContext(BaseModel):
+    ocr: OcrRiskSignals | None = None
+    face: FaceRiskSignals | None = None
+    device_trust: DeviceTrustSignals | None = None
+    retry: RetrySignals | None = None
+    network_interrupted: bool = False
 
 
 class EnrollRequest(BaseModel):
     id_hash: str = Field(..., min_length=64, max_length=64)
     encrypted_pii: str = Field(..., min_length=8)
     public_key: str = Field(..., min_length=1)
+    correlation_id: str | None = Field(default=None, min_length=8, max_length=128)
+    risk_context: VerificationRiskContext | None = None
 
 
 class SchnorrProof(BaseModel):
@@ -62,6 +111,8 @@ class VerifyRequest(BaseModel):
     encrypted_pii: str = Field(..., min_length=8)
     public_key: str | None = None
     proof: SchnorrProof
+    correlation_id: str | None = Field(default=None, min_length=8, max_length=128)
+    risk_context: VerificationRiskContext | None = None
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -95,11 +146,6 @@ def _init_db() -> None:
             );
             """
         )
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    _init_db()
 
 
 def _is_valid_hex_sha256(value: str) -> bool:
@@ -139,6 +185,99 @@ def _compute_challenge(id_hash: str, session_nonce: str, commitment: int) -> int
     return (int.from_bytes(digest, "big") % (Q - 1)) + 1
 
 
+def _risk_context_to_dict(
+    risk_context: VerificationRiskContext | None,
+) -> dict[str, Any] | None:
+    if risk_context is None:
+        return None
+    return risk_context.model_dump(exclude_none=True)
+
+
+def _resolve_correlation_id(request: Request, body_correlation_id: str | None) -> str:
+    state_correlation_id = getattr(request.state, "correlation_id", None)
+    if isinstance(state_correlation_id, str) and state_correlation_id.strip():
+        return state_correlation_id.strip()
+
+    if body_correlation_id is not None and body_correlation_id.strip():
+        return body_correlation_id.strip()
+
+    generated = str(uuid.uuid4())
+    request.state.correlation_id = generated
+    return generated
+
+
+def _build_verify_response(
+    *,
+    verified: bool,
+    reason: str,
+    score: float,
+    correlation_id: str,
+    risk_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    decision = evaluate_decision(
+        verified=verified,
+        verify_reason=reason,
+        correlation_id=correlation_id,
+        risk_context=risk_context,
+        enforce_device_trust_signal=True,
+    )
+
+    log_audit_event(
+        event_name="face_liveness_evaluated",
+        correlation_id=correlation_id,
+        decision_status=decision.decision_status.value,
+        reason_codes=decision.reason_codes,
+        metadata={"face": (risk_context or {}).get("face", {})},
+    )
+    log_audit_event(
+        event_name="final_decision_issued",
+        correlation_id=correlation_id,
+        decision_status=decision.decision_status.value,
+        reason_codes=decision.reason_codes,
+        metadata={
+            "verified": verified,
+            "reason": reason,
+            "retry_allowed": decision.retry_allowed,
+            "retry_policy": decision.retry_policy.value,
+        },
+    )
+
+    if decision.retry_allowed:
+        log_audit_event(
+            event_name="retry_requested",
+            correlation_id=correlation_id,
+            decision_status=decision.decision_status.value,
+            reason_codes=decision.reason_codes,
+            metadata={
+                "retry_reason": decision.retry_reason,
+                "retry_policy": decision.retry_policy.value,
+            },
+        )
+
+    payload: dict[str, Any] = {
+        "verified": verified,
+        "reason": reason,
+        "score": score,
+        "server_time": int(time.time()),
+    }
+    payload.update(decision.to_dict())
+    return payload
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    incoming_correlation_id = request.headers.get("X-Correlation-ID")
+    if incoming_correlation_id is None or not incoming_correlation_id.strip():
+        incoming_correlation_id = str(uuid.uuid4())
+
+    correlation_id = incoming_correlation_id.strip()
+    request.state.correlation_id = correlation_id
+
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    return response
+
+
 @app.middleware("http")
 async def verify_rate_limit_middleware(request: Request, call_next):
     if request.url.path == "/verify":
@@ -153,14 +292,32 @@ async def verify_rate_limit_middleware(request: Request, call_next):
                 bucket.popleft()
 
             if len(bucket) >= VERIFY_RATE_LIMIT_MAX_REQUESTS:
+                correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
+                decision = rate_limited_decision(correlation_id)
+
+                log_audit_event(
+                    event_name="retry_requested",
+                    correlation_id=correlation_id,
+                    decision_status=decision.decision_status.value,
+                    reason_codes=decision.reason_codes,
+                    metadata={"reason": "rate_limited"},
+                )
+
+                content: dict[str, Any] = {
+                    "verified": False,
+                    "reason": "rate_limited",
+                    "score": 0.0,
+                    "server_time": int(time.time()),
+                }
+                content.update(decision.to_dict())
+
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
-                        "verified": False,
-                        "reason": "rate_limited",
-                        "detail": "Too many verify attempts. Please retry later.",
+                    content=content,
+                    headers={
+                        "Retry-After": str(VERIFY_RATE_LIMIT_WINDOW_SECONDS),
+                        "X-Correlation-ID": correlation_id,
                     },
-                    headers={"Retry-After": str(VERIFY_RATE_LIMIT_WINDOW_SECONDS)},
                 )
 
             bucket.append(now)
@@ -174,19 +331,49 @@ def health_check() -> dict[str, str]:
 
 
 @app.post("/enroll")
-def enroll(request: EnrollRequest) -> dict[str, str | int]:
-    id_hash = request.id_hash.lower()
+def enroll(request: Request, payload: EnrollRequest) -> dict[str, Any]:
+    correlation_id = _resolve_correlation_id(request, payload.correlation_id)
+    id_hash = payload.id_hash.lower()
+
+    log_audit_event(
+        event_name="session_started",
+        correlation_id=correlation_id,
+        metadata={"stage": "enroll", "id_hash_prefix": id_hash[:8]},
+    )
+
     if not _is_valid_hex_sha256(id_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="id_hash phải là SHA-256 hex (64 ký tự).",
         )
 
-    public_key = _parse_positive_int(request.public_key, "public_key")
+    public_key = _parse_positive_int(payload.public_key, "public_key")
     if not _is_subgroup_element(public_key):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="public_key không hợp lệ trong nhóm Schnorr.",
+        )
+
+    risk_context_dict = _risk_context_to_dict(payload.risk_context)
+    if risk_context_dict and "ocr" in risk_context_dict:
+        log_audit_event(
+            event_name="ocr_submitted",
+            correlation_id=correlation_id,
+            metadata={"ocr": risk_context_dict.get("ocr", {})},
+        )
+
+        ocr_decision = evaluate_decision(
+            verified=True,
+            verify_reason="ok",
+            correlation_id=correlation_id,
+            risk_context={"ocr": risk_context_dict.get("ocr", {})},
+        )
+        log_audit_event(
+            event_name="ocr_evaluated",
+            correlation_id=correlation_id,
+            decision_status=ocr_decision.decision_status.value,
+            reason_codes=ocr_decision.reason_codes,
+            metadata={"ocr": risk_context_dict.get("ocr", {})},
         )
 
     now = int(time.time())
@@ -200,45 +387,78 @@ def enroll(request: EnrollRequest) -> dict[str, str | int]:
                 public_key = excluded.public_key,
                 updated_at = excluded.updated_at;
             """,
-            (id_hash, request.encrypted_pii, str(public_key), now, now),
+            (id_hash, payload.encrypted_pii, str(public_key), now, now),
         )
 
     return {
         "status": "enrolled",
         "id_hash": id_hash,
         "updated_at": now,
+        "correlation_id": correlation_id,
     }
 
 
 @app.post("/verify")
-def verify(request: VerifyRequest) -> dict[str, bool | str | float | int]:
-    id_hash = request.id_hash.lower()
+def verify(request: Request, payload: VerifyRequest) -> dict[str, Any]:
+    correlation_id = _resolve_correlation_id(request, payload.correlation_id)
+    risk_context_dict = _risk_context_to_dict(payload.risk_context)
+
+    id_hash = payload.id_hash.lower()
+    log_audit_event(
+        event_name="session_started",
+        correlation_id=correlation_id,
+        metadata={"stage": "verify", "id_hash_prefix": id_hash[:8]},
+    )
+
+    if risk_context_dict and "ocr" in risk_context_dict:
+        log_audit_event(
+            event_name="ocr_submitted",
+            correlation_id=correlation_id,
+            metadata={"ocr": risk_context_dict.get("ocr", {})},
+        )
+
+    if risk_context_dict and "face" in risk_context_dict:
+        log_audit_event(
+            event_name="face_liveness_submitted",
+            correlation_id=correlation_id,
+            metadata={"face": risk_context_dict.get("face", {})},
+        )
+
+    if risk_context_dict and "device_trust" in risk_context_dict:
+        log_audit_event(
+            event_name="integrity_check_result",
+            correlation_id=correlation_id,
+            metadata={"device_trust": risk_context_dict.get("device_trust", {})},
+        )
+
     if not _is_valid_hex_sha256(id_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="id_hash phải là SHA-256 hex (64 ký tự).",
         )
 
-    proof = request.proof
+    proof = payload.proof
     commitment = _parse_positive_int(proof.commitment, "proof.commitment")
     challenge = _parse_positive_int(proof.challenge, "proof.challenge")
     response = _parse_positive_int(proof.response, "proof.response")
 
     if not _is_subgroup_element(commitment):
-        return {
-            "verified": False,
-            "reason": "commitment_not_in_subgroup",
-            "score": 0.0,
-            "server_time": int(time.time()),
-        }
+        return _build_verify_response(
+            verified=False,
+            reason="commitment_not_in_subgroup",
+            score=0.0,
+            correlation_id=correlation_id,
+            risk_context=risk_context_dict,
+        )
 
     if challenge >= Q or response >= Q:
-        return {
-            "verified": False,
-            "reason": "proof_out_of_range",
-            "score": 0.0,
-            "server_time": int(time.time()),
-        }
+        return _build_verify_response(
+            verified=False,
+            reason="proof_out_of_range",
+            score=0.0,
+            correlation_id=correlation_id,
+            risk_context=risk_context_dict,
+        )
 
     with _get_connection() as connection:
         enrollment_row = connection.execute(
@@ -247,36 +467,39 @@ def verify(request: VerifyRequest) -> dict[str, bool | str | float | int]:
         ).fetchone()
 
         if enrollment_row is None:
-            return {
-                "verified": False,
-                "reason": "not_enrolled",
-                "score": 0.0,
-                "server_time": int(time.time()),
-            }
+            return _build_verify_response(
+                verified=False,
+                reason="not_enrolled",
+                score=0.0,
+                correlation_id=correlation_id,
+                risk_context=risk_context_dict,
+            )
 
         stored_public_key = int(enrollment_row["public_key"])
 
-        if request.public_key is not None:
-            claimed_public_key = _parse_positive_int(request.public_key, "public_key")
+        if payload.public_key is not None:
+            claimed_public_key = _parse_positive_int(payload.public_key, "public_key")
             if claimed_public_key != stored_public_key:
-                return {
-                    "verified": False,
-                    "reason": "public_key_mismatch",
-                    "score": 0.0,
-                    "server_time": int(time.time()),
-                }
+                return _build_verify_response(
+                    verified=False,
+                    reason="public_key_mismatch",
+                    score=0.0,
+                    correlation_id=correlation_id,
+                    risk_context=risk_context_dict,
+                )
 
         replay_row = connection.execute(
             "SELECT 1 FROM used_nonces WHERE id_hash = ? AND session_nonce = ?",
             (id_hash, proof.session_nonce),
         ).fetchone()
         if replay_row is not None:
-            return {
-                "verified": False,
-                "reason": "replay_detected",
-                "score": 0.0,
-                "server_time": int(time.time()),
-            }
+            return _build_verify_response(
+                verified=False,
+                reason="replay_detected",
+                score=0.0,
+                correlation_id=correlation_id,
+                risk_context=risk_context_dict,
+            )
 
         expected_challenge = _compute_challenge(
             id_hash=id_hash,
@@ -284,12 +507,13 @@ def verify(request: VerifyRequest) -> dict[str, bool | str | float | int]:
             commitment=commitment,
         )
         if challenge != expected_challenge:
-            return {
-                "verified": False,
-                "reason": "challenge_mismatch",
-                "score": 0.0,
-                "server_time": int(time.time()),
-            }
+            return _build_verify_response(
+                verified=False,
+                reason="challenge_mismatch",
+                score=0.0,
+                correlation_id=correlation_id,
+                risk_context=risk_context_dict,
+            )
 
         lhs = pow(G, response, P)
         rhs = (commitment * pow(stored_public_key, challenge, P)) % P
@@ -305,12 +529,13 @@ def verify(request: VerifyRequest) -> dict[str, bool | str | float | int]:
             )
             connection.execute(
                 "UPDATE enrollments SET encrypted_pii = ?, updated_at = ? WHERE id_hash = ?",
-                (request.encrypted_pii, now, id_hash),
+                (payload.encrypted_pii, now, id_hash),
             )
 
-        return {
-            "verified": is_verified,
-            "reason": "ok" if is_verified else "equation_failed",
-            "score": verification_score,
-            "server_time": int(time.time()),
-        }
+        return _build_verify_response(
+            verified=is_verified,
+            reason="ok" if is_verified else "equation_failed",
+            score=verification_score,
+            correlation_id=correlation_id,
+            risk_context=risk_context_dict,
+        )
