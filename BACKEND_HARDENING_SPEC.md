@@ -10,12 +10,13 @@ Establish a practical backend protection baseline for controlled Android pilot u
 - Environment-driven auth modes with safer non-dev defaults.
 - Explicit CORS middleware policy.
 - Route-aware in-memory rate limiting for /enroll and /verify.
-- Readiness diagnostics endpoint: GET /ready.
+- Readiness diagnostics endpoint: GET /ready (minimal by default in non-dev).
 - Safer unhandled-exception response contract with correlation id.
 
 ### Scaffolded only
 - In-memory throttling is single-instance and not distributed.
 - Shared-secret auth model is pilot-grade and intentionally lightweight.
+- Shared-secret auth is a coarse traffic gate only, not strong mobile client authentication.
 
 ### Requires human or external setup
 - Secret provisioning and rotation process.
@@ -42,6 +43,15 @@ Environment variables:
 - EKYC_CLIENT_API_KEY=<shared-secret>
 - EKYC_CLIENT_BEARER_TOKEN=<shared-token>
 - EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV=true|false
+
+Security model clarification:
+- Shared-secret headers from a mobile client must be treated as coarse pilot traffic gating.
+- They are not proof of genuine untampered app identity.
+- Stronger trust posture in this repo comes primarily from:
+  - Play Integrity verification and verdict normalization,
+  - decision engine policy outcomes,
+  - abuse controls and rate limiting,
+  - operational monitoring and incident response.
 
 Behavior:
 - dev default: auth mode defaults to disabled.
@@ -83,7 +93,12 @@ Response behavior:
 ## Secret and Config Discipline
 - No secrets are hardcoded in repository.
 - Non-dev secure defaults prefer closed or degraded-safe behavior over permissive behavior.
-- Readiness endpoint reports posture only (boolean checks), never secret values.
+- Readiness endpoint never returns secret values.
+- In non-dev, readiness detail is hidden by default and can be explicitly enabled.
+
+Readiness detail config:
+- EKYC_READY_EXPOSE_DETAIL=true|false
+- default: true in dev, false in non-dev
 
 ## Error-Handling Rules
 - Unhandled server exceptions return:
@@ -114,3 +129,4 @@ Privacy behavior is preserved:
 - Set EKYC_ALLOWED_ORIGINS per staging/prod frontend domains if web clients are used.
 - Decide operational policy for EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV (recommended false).
 - Validate readiness posture in staging before pilot traffic.
+- Restrict /ready network exposure at gateway/load-balancer level in non-dev.

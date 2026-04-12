@@ -145,6 +145,7 @@ def test_readiness_reports_not_ready_in_non_dev_without_required_security_config
     monkeypatch.delenv("EKYC_CLIENT_API_KEY", raising=False)
     monkeypatch.setenv("EKYC_INTEGRITY_VERIFIER_MODE", "mock")
     monkeypatch.setenv("EKYC_ALLOWED_ORIGINS", "")
+    monkeypatch.setenv("EKYC_READY_EXPOSE_DETAIL", "true")
 
     response = client.get("/ready")
 
@@ -154,6 +155,18 @@ def test_readiness_reports_not_ready_in_non_dev_without_required_security_config
     assert payload["checks"]["client_auth_ready"] is False
     assert payload["checks"]["integrity_verifier_ready"] is False
     assert payload["checks"]["cors_ready"] is False
+
+
+def test_readiness_hides_detailed_checks_by_default_in_non_dev(client, monkeypatch):
+    monkeypatch.setenv("EKYC_BACKEND_ENV", "staging")
+    monkeypatch.delenv("EKYC_READY_EXPOSE_DETAIL", raising=False)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "checks" not in payload
+    assert "backend_env" not in payload
 
 
 def test_readiness_reports_ready_in_dev_default(client, monkeypatch):

@@ -64,6 +64,10 @@ Backend auth compatibility defines (optional but recommended in non-dev):
 - EKYC_API_KEY=<shared-key>
 - EKYC_API_BEARER_TOKEN=<shared-token>
 
+Security note:
+- These shared-secret headers are coarse pilot traffic gates only.
+- They must not be treated as strong mobile client authentication.
+
 ## Versioning Approach
 - Source of truth remains pubspec.yaml version field (versionName + versionCode).
 - Use semantic versioning with monotonically increasing build number.

@@ -30,6 +30,7 @@ Status: COMPLETE FOR PILOT BASELINE
 - Explicit CORS middleware policy.
 - Route-aware rate limiting for sensitive endpoints.
 - Readiness diagnostics endpoint (/ready).
+- Shared-secret route auth is treated as pilot coarse gating, not strong client identity proof.
 
 ### D) Logging and Privacy Safety
 Status: COMPLETE FOR PILOT BASELINE
@@ -76,7 +77,15 @@ Status: PENDING (OUTSIDE REPO)
 
 ### Scaffolded only
 - In-memory rate limiting suitable for pilot but not distributed.
-- Shared-secret service auth suitable for pilot baseline.
+- Shared-secret service auth suitable for pilot baseline but not strong mobile client authentication.
+
+### Security model clarification
+- The primary trust stack for pilot decisions is:
+	- Play Integrity verdicts,
+	- decision engine policy mapping,
+	- rate limiting and abuse controls,
+	- operational monitoring and alerting.
+- Shared-secret headers are supportive coarse controls, not standalone high-assurance client auth.
 
 ### Requires human setup outside repo
 - Real keystore material and CI secret injection.

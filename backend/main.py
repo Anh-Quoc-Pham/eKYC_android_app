@@ -82,6 +82,7 @@ class ServiceSecuritySettings:
     allow_insecure_no_auth_in_non_dev: bool
     allowed_origins: list[str]
     cors_allow_credentials: bool
+    readiness_expose_detail: bool
     enroll_rate_limit_max_requests: int
     enroll_rate_limit_window_seconds: int
     verify_rate_limit_max_requests: int
@@ -115,6 +116,10 @@ class ServiceSecuritySettings:
             cors_allow_credentials=_parse_bool(
                 resolved_env.get("EKYC_CORS_ALLOW_CREDENTIALS", "false"),
                 default=False,
+            ),
+            readiness_expose_detail=_parse_bool(
+                resolved_env.get("EKYC_READY_EXPOSE_DETAIL", ""),
+                default=backend_env == "dev",
             ),
             enroll_rate_limit_max_requests=_parse_positive_env_int(
                 resolved_env.get(
@@ -782,12 +787,20 @@ def readiness_check(request: Request) -> dict[str, Any]:
             metadata={"checks": checks, "backend_env": settings.backend_env},
         )
 
-    return {
+    payload: dict[str, Any] = {
         "status": service_status,
-        "backend_env": settings.backend_env,
-        "checks": checks,
         "correlation_id": correlation_id,
     }
+
+    if settings.readiness_expose_detail:
+        payload.update(
+            {
+                "backend_env": settings.backend_env,
+                "checks": checks,
+            }
+        )
+
+    return payload
 
 
 @app.post("/enroll")

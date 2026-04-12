@@ -97,7 +97,7 @@
 
 ### Scaffolded only
 - In-memory rate limiting suitable for single-instance pilot baseline.
-- Shared-secret auth model suitable for pilot baseline.
+- Shared-secret auth model suitable for pilot baseline, but not strong mobile client authentication.
 
 ### Requires human or external setup
 - Secret provisioning and rotation process ownership.
@@ -115,6 +115,6 @@
 
 ## 7. Known Risks
 - In-memory limiter is not multi-instance/distributed-safe.
-- Shared-secret auth requires disciplined secret rotation.
+- Shared-secret auth requires disciplined secret rotation and must not be treated as high-assurance app identity proof.
 - /ready endpoint is not network-restricted in code; deployment controls should restrict exposure.
 - External cloud/release operations remain critical path for production readiness.

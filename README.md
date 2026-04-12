@@ -47,7 +47,8 @@ Invoke-WebRequest http://127.0.0.1:8000/ready
 Notes:
 
 - `/health` reports liveness.
-- `/ready` reports security/config posture (`ready` or `not_ready`) for pilot operations.
+- `/ready` reports service readiness status for pilot operations.
+- In non-dev, detailed readiness checks are hidden by default unless explicitly enabled.
 
 ## 2) Environment Configuration (dev/staging/prod)
 
@@ -93,11 +94,21 @@ Backend hardening settings:
 - `EKYC_RATE_LIMIT_ENROLL_WINDOW_SECONDS=<int>`
 - `EKYC_RATE_LIMIT_VERIFY_MAX_REQUESTS=<int>`
 - `EKYC_RATE_LIMIT_VERIFY_WINDOW_SECONDS=<int>`
+- `EKYC_READY_EXPOSE_DETAIL=true|false` (default true in dev, false in non-dev)
 
 Non-dev defaults are intentionally stricter:
 
 - If auth mode is not configured securely, protected routes can return non-ready/denied behavior.
 - Non-dev `disabled` auth mode requires explicit override via `EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV=true`.
+
+Shared-secret auth clarification:
+
+- `EKYC_API_KEY` / `EKYC_API_BEARER_TOKEN` are pilot coarse traffic gates, not strong mobile client authentication.
+- Stronger trust posture should rely primarily on:
+	- Play Integrity verdicts,
+	- decision engine policy outcomes,
+	- rate limiting and abuse controls,
+	- operational monitoring and alerting.
 
 ## 3) Run Flutter App
 
