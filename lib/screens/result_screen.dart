@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_routes.dart';
 import '../app_theme.dart';
+import '../models/decision_models.dart';
 import '../services/ekyc_session.dart';
 
 class ResultScreen extends StatelessWidget {
@@ -10,7 +11,19 @@ class ResultScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = EkycSession.instance;
-    final success = session.verificationSucceeded;
+    final decision = session.decisionOutcome;
+    final decisionStatus = _resolveDecisionStatus(session);
+    final retryAllowed =
+        decision?.retryAllowed ?? !session.verificationSucceeded;
+    final retryPolicy =
+        decision?.retryPolicy ??
+        (retryAllowed ? RetryPolicy.immediate : RetryPolicy.noRetry);
+    final canRetryFace =
+        retryAllowed &&
+        (retryPolicy == RetryPolicy.immediate ||
+            retryPolicy == RetryPolicy.waitBeforeRetry);
+    final canRetryReview =
+        retryAllowed && retryPolicy == RetryPolicy.userCorrection;
     final compact = AppLayout.isCompact(context);
     final pagePadding = AppLayout.pagePadding(context);
 
@@ -21,10 +34,7 @@ class ResultScreen extends StatelessWidget {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
-              success ? const Color(0xFFEAF7F1) : const Color(0xFFFFF2F2),
-              AppColors.canvas,
-            ],
+            colors: [_backgroundTone(decisionStatus), AppColors.canvas],
           ),
         ),
         child: SafeArea(
@@ -70,28 +80,29 @@ class ResultScreen extends StatelessWidget {
                           return Transform.scale(
                             scale: scale,
                             child: Icon(
-                              success ? Icons.verified : Icons.error_outline,
+                              _statusIcon(decisionStatus),
                               size: compact ? 40 : 44,
-                              color: success
-                                  ? AppColors.success
-                                  : AppColors.danger,
+                              color: _statusColor(decisionStatus),
                             ),
                           );
                         },
                       ),
                       SizedBox(height: compact ? 8 : 10),
                       Text(
-                        success ? 'Success' : 'Failure',
+                        _headline(decisionStatus),
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: success ? AppColors.success : AppColors.danger,
+                          color: _statusColor(decisionStatus),
                           fontWeight: FontWeight.w800,
                         ),
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        session.verificationMessage.isEmpty
-                            ? 'Không có thông điệp trả về từ server.'
-                            : session.verificationMessage,
+                        _userFacingMessage(
+                          decision: decision,
+                          fallbackMessage: session.verificationMessage,
+                          retryPolicy: retryPolicy,
+                          retryAllowed: retryAllowed,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -99,8 +110,16 @@ class ResultScreen extends StatelessWidget {
                 ),
                 SizedBox(height: compact ? 10 : 12),
                 _InfoRow(
+                  label: 'Decision',
+                  value: decisionStatus.name.toUpperCase(),
+                ),
+                _InfoRow(
                   label: 'Trạng thái HTTP',
                   value: '${session.verificationStatusCode}',
+                ),
+                _InfoRow(
+                  label: 'Retry Policy',
+                  value: _retryPolicyLabel(retryPolicy),
                 ),
                 _InfoRow(
                   label: 'Liveness',
@@ -118,33 +137,44 @@ class ResultScreen extends StatelessWidget {
                     value: _truncateHash(session.cccdHash),
                     monospace: true,
                   ),
+                if ((decision?.correlationId ?? session.correlationId)
+                    .isNotEmpty)
+                  _InfoRow(
+                    label: 'Correlation ID',
+                    value: _truncateHash(
+                      decision?.correlationId ?? session.correlationId,
+                    ),
+                    monospace: true,
+                  ),
                 SizedBox(height: compact ? 18 : 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.of(
-                        context,
-                      ).pushReplacementNamed(AppRoutes.face);
-                    },
-                    icon: const Icon(Icons.replay),
-                    label: const Text('Quét mặt lại'),
+                if (canRetryFace)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.of(
+                          context,
+                        ).pushReplacementNamed(AppRoutes.face);
+                      },
+                      icon: const Icon(Icons.replay),
+                      label: const Text('Thử lại xác minh khuôn mặt'),
+                    ),
                   ),
-                ),
-                SizedBox(height: compact ? 8 : 10),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.of(
-                        context,
-                      ).pushReplacementNamed(AppRoutes.review);
-                    },
-                    icon: const Icon(Icons.edit_outlined),
-                    label: const Text('Chỉnh thông tin OCR'),
+                if (canRetryFace) SizedBox(height: compact ? 8 : 10),
+                if (canRetryReview)
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(
+                          context,
+                        ).pushReplacementNamed(AppRoutes.review);
+                      },
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Sửa OCR và thử lại'),
+                    ),
                   ),
-                ),
-                SizedBox(height: compact ? 8 : 10),
+                if (canRetryReview) SizedBox(height: compact ? 8 : 10),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
@@ -172,6 +202,118 @@ class ResultScreen extends StatelessWidget {
       return hash;
     }
     return '${hash.substring(0, 10)}...${hash.substring(hash.length - 8)}';
+  }
+
+  static DecisionStatus _resolveDecisionStatus(EkycSession session) {
+    final decision = session.decisionOutcome;
+    if (decision != null) {
+      return decision.status;
+    }
+
+    return session.verificationSucceeded
+        ? DecisionStatus.pass
+        : DecisionStatus.review;
+  }
+
+  static Color _backgroundTone(DecisionStatus status) {
+    switch (status) {
+      case DecisionStatus.pass:
+        return const Color(0xFFEAF7F1);
+      case DecisionStatus.review:
+        return const Color(0xFFFFF8E8);
+      case DecisionStatus.reject:
+        return const Color(0xFFFFF2F2);
+    }
+  }
+
+  static Color _statusColor(DecisionStatus status) {
+    switch (status) {
+      case DecisionStatus.pass:
+        return AppColors.success;
+      case DecisionStatus.review:
+        return const Color(0xFFE38A1D);
+      case DecisionStatus.reject:
+        return AppColors.danger;
+    }
+  }
+
+  static IconData _statusIcon(DecisionStatus status) {
+    switch (status) {
+      case DecisionStatus.pass:
+        return Icons.verified;
+      case DecisionStatus.review:
+        return Icons.rule_folder_outlined;
+      case DecisionStatus.reject:
+        return Icons.block_outlined;
+    }
+  }
+
+  static String _headline(DecisionStatus status) {
+    switch (status) {
+      case DecisionStatus.pass:
+        return 'Đã xác thực thành công';
+      case DecisionStatus.review:
+        return 'Cần rà soát thêm';
+      case DecisionStatus.reject:
+        return 'Từ chối xác thực';
+    }
+  }
+
+  static String _retryPolicyLabel(RetryPolicy retryPolicy) {
+    switch (retryPolicy) {
+      case RetryPolicy.immediate:
+        return 'Retry ngay';
+      case RetryPolicy.userCorrection:
+        return 'Cần sửa thông tin';
+      case RetryPolicy.waitBeforeRetry:
+        return 'Đợi và thử lại';
+      case RetryPolicy.manualReview:
+        return 'Rà soát thủ công';
+      case RetryPolicy.noRetry:
+        return 'Không cho retry';
+    }
+  }
+
+  static String _userFacingMessage({
+    required DecisionOutcome? decision,
+    required String fallbackMessage,
+    required RetryPolicy retryPolicy,
+    required bool retryAllowed,
+  }) {
+    if (decision == null) {
+      return fallbackMessage.isEmpty
+          ? 'Không có thông điệp trả về từ server.'
+          : fallbackMessage;
+    }
+
+    switch (decision.userMessageKey) {
+      case 'decision.pass':
+        return 'Phiên eKYC đạt yêu cầu cho bước pilot.';
+      case 'decision.review.document_quality':
+        return 'Ảnh giấy tờ chưa đạt chất lượng. Vui lòng chỉnh lại góc chụp/ánh sáng và thử lại.';
+      case 'decision.review.liveness_retry':
+        return 'Độ tin cậy liveness chưa đủ. Vui lòng thực hiện lại thao tác khuôn mặt.';
+      case 'decision.review.network_retry':
+        return 'Kết nối mạng bị gián đoạn. Bạn có thể thử lại ngay.';
+      case 'decision.review.device_trust_pending':
+        return 'Thiết bị chưa cung cấp đủ tín hiệu integrity. Vui lòng thử lại sau.';
+      case 'decision.review.internal_required':
+        return 'Phiên xác minh cần chuyển bước rà soát nội bộ.';
+      case 'decision.reject.retry_limit':
+        return 'Bạn đã vượt quá giới hạn số lần thử trong phiên này.';
+      case 'decision.reject.security_check_failed':
+        return 'Phiên xác minh bị từ chối do tín hiệu an toàn không đạt yêu cầu.';
+      default:
+        if (retryAllowed && retryPolicy == RetryPolicy.userCorrection) {
+          return 'Có thể thử lại sau khi điều chỉnh thông tin/điều kiện chụp.';
+        }
+        if (retryAllowed) {
+          return 'Bạn có thể thử lại xác minh.';
+        }
+        return fallbackMessage.isEmpty
+            ? 'Phiên xác minh chưa thể tự động phê duyệt.'
+            : fallbackMessage;
+    }
   }
 }
 

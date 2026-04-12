@@ -7,6 +7,8 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../models/decision_models.dart';
+
 class ZkpKeyPair {
   const ZkpKeyPair({required this.privateKey, required this.publicKey});
 
@@ -50,12 +52,14 @@ class ZkpBackendResult {
     required this.statusCode,
     required this.message,
     required this.payload,
+    required this.decision,
   });
 
   final bool ok;
   final int statusCode;
   final String message;
   final Map<String, dynamic> payload;
+  final DecisionOutcome decision;
 }
 
 class ZkpService {
@@ -166,6 +170,8 @@ class ZkpService {
     required String idHash,
     required String encryptedPii,
     required BigInt publicKey,
+    VerificationRiskContext? riskContext,
+    String? correlationId,
   }) {
     return _postJson(
       endpoint: '/enroll',
@@ -173,7 +179,9 @@ class ZkpService {
         'id_hash': _normalizeIdHash(idHash),
         'encrypted_pii': encryptedPii,
         'public_key': publicKey.toString(),
+        if (riskContext != null) 'risk_context': riskContext.toJson(),
       },
+      correlationId: correlationId,
     );
   }
 
@@ -182,6 +190,8 @@ class ZkpService {
     required String encryptedPii,
     required BigInt publicKey,
     required SchnorrProof proof,
+    VerificationRiskContext? riskContext,
+    String? correlationId,
   }) {
     return _postJson(
       endpoint: '/verify',
@@ -190,16 +200,21 @@ class ZkpService {
         'encrypted_pii': encryptedPii,
         'public_key': publicKey.toString(),
         'proof': proof.toJson(),
+        if (riskContext != null) 'risk_context': riskContext.toJson(),
       },
+      correlationId: correlationId,
     );
   }
 
   Future<ZkpBackendResult> submitPhase3({
     required String idHash,
     required Map<String, dynamic> pii,
+    VerificationRiskContext? riskContext,
+    String? correlationId,
     bool enrollIfNeeded = true,
     bool rotatePiiKey = true,
   }) async {
+    final requestCorrelationId = correlationId ?? _generateCorrelationId();
     final keyPair = await ensureKeyPair();
     final encryptedPii = await encryptPii(
       pii: pii,
@@ -212,6 +227,8 @@ class ZkpService {
         idHash: idHash,
         encryptedPii: encryptedPii,
         publicKey: keyPair.publicKey,
+        riskContext: riskContext,
+        correlationId: requestCorrelationId,
       );
 
       if (!enrollResult.ok) {
@@ -226,13 +243,23 @@ class ZkpService {
       encryptedPii: encryptedPii,
       publicKey: keyPair.publicKey,
       proof: proof,
+      riskContext: riskContext,
+      correlationId: requestCorrelationId,
     );
   }
 
   Future<ZkpBackendResult> _postJson({
     required String endpoint,
     required Map<String, dynamic> body,
+    String? correlationId,
   }) async {
+    final requestCorrelationId = correlationId ?? _generateCorrelationId();
+    final requestBody = <String, dynamic>{
+      ...body,
+      if (!body.containsKey('correlation_id'))
+        'correlation_id': requestCorrelationId,
+    };
+
     final uri = Uri.parse(
       '${baseUrl.trim().replaceAll(RegExp(r'/+$'), '')}$endpoint',
     );
@@ -240,8 +267,11 @@ class ZkpService {
     try {
       final response = await _httpClient.post(
         uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Correlation-ID': requestCorrelationId,
+        },
+        body: jsonEncode(requestBody),
       );
 
       final decodedBody = _decodeJsonMap(response.body);
@@ -252,18 +282,37 @@ class ZkpService {
           decodedBody['detail']?.toString() ??
           (ok ? 'ok' : 'request_failed');
 
+      final decision = DecisionOutcome.fromBackendPayload(
+        decodedBody,
+        fallbackStatusCode: response.statusCode,
+        fallbackMessage: message,
+        fallbackCorrelationId: requestCorrelationId,
+      );
+
       return ZkpBackendResult(
-        ok: ok && (decodedBody['verified'] as bool? ?? true),
+        ok: ok && decision.isPass,
         statusCode: response.statusCode,
         message: message,
         payload: decodedBody,
+        decision: decision,
       );
     } catch (error) {
+      final decision = DecisionOutcome.networkInterrupted(
+        correlationId: requestCorrelationId,
+      );
       return ZkpBackendResult(
         ok: false,
         statusCode: 0,
         message: 'network_error: $error',
-        payload: const {},
+        payload: {
+          'decision_status': 'REVIEW',
+          'reason_codes': const [ReasonCodes.networkInterrupted],
+          'retry_allowed': true,
+          'retry_reason': 'network_interrupted',
+          'retry_policy': 'IMMEDIATE',
+          'correlation_id': requestCorrelationId,
+        },
+        decision: decision,
       );
     }
   }
@@ -282,6 +331,15 @@ class ZkpService {
 
   String _generateSessionNonce() {
     return base64UrlEncode(_randomBytes(16)).replaceAll('=', '');
+  }
+
+  String _generateCorrelationId() {
+    final bytes = _randomBytes(16);
+    final buffer = StringBuffer();
+    for (final byte in bytes) {
+      buffer.write(byte.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
   }
 
   BigInt _randomScalar() {

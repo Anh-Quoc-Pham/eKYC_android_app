@@ -10,6 +10,8 @@ import 'package:permission_handler/permission_handler.dart';
 import '../app_routes.dart';
 import '../app_theme.dart';
 import '../config/app_config.dart';
+import '../models/decision_models.dart';
+import '../services/device_trust_service.dart';
 import '../services/ekyc_session.dart';
 import '../services/zkp_service.dart';
 
@@ -39,6 +41,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   final FaceDetector _faceDetector;
   final EkycSession _session = EkycSession.instance;
+  final DeviceTrustService _deviceTrustService = DeviceTrustService();
   late final ZkpService _zkpService;
 
   CameraController? _cameraController;
@@ -140,9 +143,25 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     });
 
     try {
+      _session.registerVerificationAttempt();
+
       final cccd = await _secureStorage.read(key: 'ekyc.cccd') ?? '';
       final dateOfBirth =
           await _secureStorage.read(key: 'ekyc.date_of_birth') ?? '';
+      final trustSignal = await _deviceTrustService.evaluate();
+
+      final riskContext = VerificationRiskContext(
+        ocr: _session.ocrRiskSignals,
+        face: FaceRiskSignals(
+          matchScore: _matchScore,
+          livenessConfidence: _livenessPassed ? 0.9 : 0.45,
+        ),
+        deviceTrust: trustSignal,
+        retry: RetrySignals(
+          attemptCount: _session.verificationAttemptCount,
+          maxAttempts: 3,
+        ),
+      );
 
       final piiPayload = <String, dynamic>{
         'full_name': _activeFullName,
@@ -156,6 +175,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       final result = await _zkpService.submitPhase3(
         idHash: _activeIdHash,
         pii: piiPayload,
+        riskContext: riskContext,
         enrollIfNeeded: true,
       );
 
@@ -165,10 +185,11 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         faceMatchScore: _matchScore,
       );
       _session.setVerificationResult(
-        succeeded: result.ok,
+        succeeded: result.decision.isPass,
         statusCode: result.statusCode,
         message: result.message,
         payload: result.payload,
+        decision: result.decision,
       );
 
       if (!mounted) {
@@ -177,6 +198,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
       Navigator.of(context).pushReplacementNamed(AppRoutes.result);
     } catch (error) {
+      final fallbackDecision = DecisionOutcome.networkInterrupted();
       _session.setFaceState(
         livenessPassed: _livenessPassed,
         faceMatchPassed: _faceMatchPassed,
@@ -187,6 +209,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         statusCode: 0,
         message: 'network_error: $error',
         payload: const <String, dynamic>{},
+        decision: fallbackDecision,
       );
 
       if (!mounted) {

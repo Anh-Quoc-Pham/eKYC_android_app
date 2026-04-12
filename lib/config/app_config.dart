@@ -29,6 +29,11 @@ class AppConfig {
     defaultValue: '',
   );
 
+  static const String _deviceTrustModeRaw = String.fromEnvironment(
+    'EKYC_DEVICE_TRUST_MODE',
+    defaultValue: 'mock_unavailable',
+  );
+
   static AppEnvironment get environment {
     switch (_environmentRaw.toLowerCase()) {
       case 'prod':
@@ -75,6 +80,10 @@ class AppConfig {
         );
     }
   }
+
+  static String get deviceTrustMode => _deviceTrustModeRaw.trim().toLowerCase();
+
+  static bool get isProductionLike => environment != AppEnvironment.dev;
 
   static String _normalizeAndValidate(
     String rawValue, {

@@ -3,6 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../app_routes.dart';
 import '../app_theme.dart';
+import '../models/decision_models.dart';
 import '../services/ekyc_session.dart';
 import '../services/ocr_service.dart';
 
@@ -91,11 +92,24 @@ class _ReviewScreenState extends State<ReviewScreen> {
       final normalizedCccd = rawCccd.replaceAll(RegExp(r'\D'), '');
       final cccdHash = OcrService.hashCccd(normalizedCccd);
 
+      final hadOcrSeedData = _session.hasOcrData;
+      final fieldMismatch =
+          hadOcrSeedData &&
+          (_session.cccd != normalizedCccd ||
+              _session.fullName != fullName ||
+              _session.dateOfBirth != dateOfBirth);
+
+      final ocrSignals = OcrRiskSignals(
+        confidence: hadOcrSeedData ? 0.90 : 0.58,
+        fieldMismatch: fieldMismatch,
+      );
+
       _session.setOcrData(
         cccd: normalizedCccd,
         fullName: fullName,
         dateOfBirth: dateOfBirth,
         cccdHash: cccdHash,
+        ocrRiskSignals: ocrSignals,
       );
 
       // Privacy-First: lưu cục bộ bằng secure storage, không đẩy dữ liệu thô lên server.

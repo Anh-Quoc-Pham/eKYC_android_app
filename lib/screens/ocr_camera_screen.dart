@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../app_routes.dart';
 import '../app_theme.dart';
+import '../models/decision_models.dart';
 import '../services/ekyc_session.dart';
 import '../services/ocr_service.dart';
 
@@ -191,6 +192,7 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
         fullName: normalizedName,
         dateOfBirth: normalizedDob,
         cccdHash: OcrService.hashCccd(normalizedCccd),
+        ocrRiskSignals: const OcrRiskSignals(confidence: 0.92),
       );
 
       await Navigator.of(context).pushNamed(AppRoutes.review);

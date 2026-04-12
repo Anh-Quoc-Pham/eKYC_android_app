@@ -1,3 +1,5 @@
+import '../models/decision_models.dart';
+
 class EkycSession {
   EkycSession._();
 
@@ -16,6 +18,11 @@ class EkycSession {
   int verificationStatusCode = 0;
   String verificationMessage = '';
   Map<String, dynamic> verificationPayload = <String, dynamic>{};
+  DecisionOutcome? decisionOutcome;
+
+  OcrRiskSignals ocrRiskSignals = const OcrRiskSignals();
+  int verificationAttemptCount = 0;
+  String correlationId = '';
 
   DateTime? updatedAt;
 
@@ -31,11 +38,14 @@ class EkycSession {
     required String fullName,
     required String dateOfBirth,
     required String cccdHash,
+    OcrRiskSignals ocrRiskSignals = const OcrRiskSignals(),
   }) {
     this.cccd = cccd;
     this.fullName = fullName;
     this.dateOfBirth = dateOfBirth;
     this.cccdHash = cccdHash;
+    this.ocrRiskSignals = ocrRiskSignals;
+    verificationAttemptCount = 0;
     updatedAt = DateTime.now();
     resetFaceAndVerification();
   }
@@ -56,11 +66,21 @@ class EkycSession {
     required int statusCode,
     required String message,
     required Map<String, dynamic> payload,
+    DecisionOutcome? decision,
   }) {
     verificationSucceeded = succeeded;
     verificationStatusCode = statusCode;
     verificationMessage = message;
     verificationPayload = payload;
+    decisionOutcome = decision;
+    if (decision != null && decision.correlationId.isNotEmpty) {
+      correlationId = decision.correlationId;
+    }
+    updatedAt = DateTime.now();
+  }
+
+  void registerVerificationAttempt() {
+    verificationAttemptCount += 1;
     updatedAt = DateTime.now();
   }
 
@@ -73,6 +93,8 @@ class EkycSession {
     verificationStatusCode = 0;
     verificationMessage = '';
     verificationPayload = <String, dynamic>{};
+    decisionOutcome = null;
+    correlationId = '';
   }
 
   void clearAll() {
@@ -80,6 +102,9 @@ class EkycSession {
     fullName = '';
     dateOfBirth = '';
     cccdHash = '';
+    ocrRiskSignals = const OcrRiskSignals();
+    verificationAttemptCount = 0;
+    correlationId = '';
     updatedAt = null;
     resetFaceAndVerification();
   }
