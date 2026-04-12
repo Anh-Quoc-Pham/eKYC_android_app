@@ -35,6 +35,10 @@ Current event names:
 - `face_liveness_evaluated`
 - `final_decision_issued`
 - `retry_requested`
+- `auth_denied`
+- `abuse_rate_limited`
+- `service_readiness_not_ready`
+- `internal_error`
 
 ## Redaction Policy
 Metadata sanitization redacts keys containing sensitive tokens:
@@ -53,6 +57,9 @@ Any key matching those keywords is replaced with `[redacted]` recursively.
   - Retry policy trends.
   - Device trust availability and quality.
   - Rate-limit rejection spikes.
+  - Auth denial spikes (`auth_denied`).
+  - Readiness degradation (`service_readiness_not_ready`).
+  - Unhandled errors (`internal_error`).
 
 ## Security Notes
 - Do not log decrypted user attributes.
@@ -69,3 +76,5 @@ Any key matching those keywords is replaced with `[redacted]` recursively.
 - Confirm every `/verify` outcome emits `final_decision_issued`.
 - Confirm retryable outcomes emit `retry_requested`.
 - Confirm metadata redaction in sampled logs before pilot go-live.
+- Confirm denied protected-route requests emit `auth_denied` with correlation id.
+- Confirm rate-limited `/enroll` requests emit `abuse_rate_limited`.

@@ -386,6 +386,8 @@ def test_non_dev_mock_mode_returns_configuration_review(
 ):
     monkeypatch.setenv("EKYC_BACKEND_ENV", "prod")
     monkeypatch.setenv("EKYC_INTEGRITY_VERIFIER_MODE", "mock")
+    monkeypatch.setenv("EKYC_CLIENT_AUTH_MODE", "disabled")
+    monkeypatch.setenv("EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV", "true")
 
     id_hash = hashlib.sha256(b"404040404040").hexdigest()
     private_key = 998877665

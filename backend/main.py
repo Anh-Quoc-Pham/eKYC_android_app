@@ -2,21 +2,30 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import hashlib
+import logging
+import os
+import secrets
 import sqlite3
 import time
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Mapping
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
 from audit_logging import log_audit_event
-from decision_engine import DecisionResult, evaluate_decision, rate_limited_decision
-from integrity_verifier import verify_play_integrity
+from decision_engine import evaluate_decision, rate_limited_decision
+from integrity_verifier import (
+    IntegrityVerifierMode,
+    IntegrityVerifierSettings,
+    verify_play_integrity,
+)
 
 # RFC 3526 - 2048-bit MODP Group prime.
 _P_HEX = (
@@ -38,11 +47,146 @@ G = 4
 
 DB_PATH = Path(__file__).resolve().parent / "ekyc_phase3.db"
 
+ENROLL_RATE_LIMIT_MAX_REQUESTS = 20
+ENROLL_RATE_LIMIT_WINDOW_SECONDS = 60
 VERIFY_RATE_LIMIT_MAX_REQUESTS = 30
 VERIFY_RATE_LIMIT_WINDOW_SECONDS = 60
+_SENSITIVE_PATHS = {"/enroll", "/verify"}
+_DEFAULT_DEV_ALLOWED_ORIGINS = [
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+_service_logger = logging.getLogger("ekyc.service")
+if not _service_logger.handlers:
+    _service_handler = logging.StreamHandler()
+    _service_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    )
+    _service_logger.addHandler(_service_handler)
+_service_logger.setLevel(logging.INFO)
+_service_logger.propagate = False
 
 _verify_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 _verify_rate_lock = Lock()
+
+
+@dataclass(slots=True)
+class ServiceSecuritySettings:
+    backend_env: str
+    auth_mode: str
+    client_api_key: str
+    client_bearer_token: str
+    allow_insecure_no_auth_in_non_dev: bool
+    allowed_origins: list[str]
+    cors_allow_credentials: bool
+    enroll_rate_limit_max_requests: int
+    enroll_rate_limit_window_seconds: int
+    verify_rate_limit_max_requests: int
+    verify_rate_limit_window_seconds: int
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "ServiceSecuritySettings":
+        resolved_env = env or os.environ
+        backend_env = resolved_env.get("EKYC_BACKEND_ENV", "dev").strip().lower() or "dev"
+        default_auth_mode = "disabled" if backend_env == "dev" else "api_key"
+        auth_mode = _normalize_auth_mode(
+            resolved_env.get("EKYC_CLIENT_AUTH_MODE", default_auth_mode),
+            default_value=default_auth_mode,
+        )
+
+        allowed_origins = _parse_allowed_origins(
+            resolved_env.get("EKYC_ALLOWED_ORIGINS", ""),
+            backend_env=backend_env,
+        )
+
+        return cls(
+            backend_env=backend_env,
+            auth_mode=auth_mode,
+            client_api_key=resolved_env.get("EKYC_CLIENT_API_KEY", "").strip(),
+            client_bearer_token=resolved_env.get("EKYC_CLIENT_BEARER_TOKEN", "").strip(),
+            allow_insecure_no_auth_in_non_dev=_parse_bool(
+                resolved_env.get("EKYC_ALLOW_INSECURE_NO_AUTH_IN_NON_DEV", "false"),
+                default=False,
+            ),
+            allowed_origins=allowed_origins,
+            cors_allow_credentials=_parse_bool(
+                resolved_env.get("EKYC_CORS_ALLOW_CREDENTIALS", "false"),
+                default=False,
+            ),
+            enroll_rate_limit_max_requests=_parse_positive_env_int(
+                resolved_env.get(
+                    "EKYC_RATE_LIMIT_ENROLL_MAX_REQUESTS",
+                    str(ENROLL_RATE_LIMIT_MAX_REQUESTS),
+                ),
+                default=ENROLL_RATE_LIMIT_MAX_REQUESTS,
+            ),
+            enroll_rate_limit_window_seconds=_parse_positive_env_int(
+                resolved_env.get(
+                    "EKYC_RATE_LIMIT_ENROLL_WINDOW_SECONDS",
+                    str(ENROLL_RATE_LIMIT_WINDOW_SECONDS),
+                ),
+                default=ENROLL_RATE_LIMIT_WINDOW_SECONDS,
+            ),
+            verify_rate_limit_max_requests=_parse_positive_env_int(
+                resolved_env.get(
+                    "EKYC_RATE_LIMIT_VERIFY_MAX_REQUESTS",
+                    str(VERIFY_RATE_LIMIT_MAX_REQUESTS),
+                ),
+                default=VERIFY_RATE_LIMIT_MAX_REQUESTS,
+            ),
+            verify_rate_limit_window_seconds=_parse_positive_env_int(
+                resolved_env.get(
+                    "EKYC_RATE_LIMIT_VERIFY_WINDOW_SECONDS",
+                    str(VERIFY_RATE_LIMIT_WINDOW_SECONDS),
+                ),
+                default=VERIFY_RATE_LIMIT_WINDOW_SECONDS,
+            ),
+        )
+
+
+def _parse_bool(raw: str, *, default: bool) -> bool:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _parse_positive_env_int(raw: str, *, default: int) -> int:
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _normalize_auth_mode(raw: str, *, default_value: str) -> str:
+    normalized = raw.strip().lower()
+    if normalized in {"disabled", "api_key", "bearer", "either"}:
+        return normalized
+    return default_value
+
+
+def _parse_allowed_origins(raw: str, *, backend_env: str) -> list[str]:
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+
+    if not origins:
+        if backend_env == "dev":
+            return _DEFAULT_DEV_ALLOWED_ORIGINS.copy()
+        return []
+
+    if backend_env != "dev" and "*" in origins:
+        return []
+
+    return origins
+
+
+def _get_service_security_settings() -> ServiceSecuritySettings:
+    return ServiceSecuritySettings.from_env()
 
 
 @asynccontextmanager
@@ -56,6 +200,22 @@ app = FastAPI(
     version="1.0.0",
     description="Privacy-first backend with Schnorr proof verification",
     lifespan=lifespan,
+)
+
+_initial_security_settings = _get_service_security_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_initial_security_settings.allowed_origins,
+    allow_credentials=_initial_security_settings.cors_allow_credentials,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Correlation-ID",
+        "X-EKYC-API-Key",
+    ],
+    expose_headers=["X-Correlation-ID"],
+    max_age=600,
 )
 
 
@@ -328,35 +488,216 @@ def _build_verify_response(
     return payload
 
 
-@app.middleware("http")
-async def correlation_id_middleware(request: Request, call_next):
+def _ensure_request_correlation_id(request: Request) -> str:
+    existing = getattr(request.state, "correlation_id", None)
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+
     incoming_correlation_id = request.headers.get("X-Correlation-ID")
     if incoming_correlation_id is None or not incoming_correlation_id.strip():
         incoming_correlation_id = str(uuid.uuid4())
 
     correlation_id = incoming_correlation_id.strip()
     request.state.correlation_id = correlation_id
+    return correlation_id
 
+
+def _is_sensitive_path(path: str) -> bool:
+    return path in _SENSITIVE_PATHS
+
+
+def _extract_bearer_token(authorization_header: str) -> str:
+    if not authorization_header:
+        return ""
+
+    normalized = authorization_header.strip()
+    if len(normalized) < 8:
+        return ""
+
+    if not normalized.lower().startswith("bearer "):
+        return ""
+
+    return normalized[7:].strip()
+
+
+def _is_client_auth_ready(settings: ServiceSecuritySettings) -> bool:
+    if settings.auth_mode == "disabled":
+        return settings.backend_env == "dev" or settings.allow_insecure_no_auth_in_non_dev
+
+    if settings.auth_mode == "api_key":
+        return settings.client_api_key != ""
+
+    if settings.auth_mode == "bearer":
+        return settings.client_bearer_token != ""
+
+    if settings.auth_mode == "either":
+        return settings.client_api_key != "" or settings.client_bearer_token != ""
+
+    return False
+
+
+def _is_request_authenticated(request: Request, settings: ServiceSecuritySettings) -> bool:
+    if settings.auth_mode == "disabled":
+        return True
+
+    api_key_header = request.headers.get("X-EKYC-API-Key", "").strip()
+    authorization_header = request.headers.get("Authorization", "")
+    bearer_token = _extract_bearer_token(authorization_header)
+
+    api_key_match = (
+        settings.client_api_key != ""
+        and api_key_header != ""
+        and secrets.compare_digest(api_key_header, settings.client_api_key)
+    )
+    bearer_match = (
+        settings.client_bearer_token != ""
+        and bearer_token != ""
+        and secrets.compare_digest(bearer_token, settings.client_bearer_token)
+    )
+
+    if settings.auth_mode == "api_key":
+        return api_key_match
+    if settings.auth_mode == "bearer":
+        return bearer_match
+    return api_key_match or bearer_match
+
+
+def _enforce_sensitive_route_auth(request: Request, settings: ServiceSecuritySettings) -> None:
+    if settings.auth_mode == "disabled":
+        if settings.backend_env != "dev" and not settings.allow_insecure_no_auth_in_non_dev:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="client_auth_required_in_non_dev",
+            )
+        return
+
+    if not _is_client_auth_ready(settings):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="client_auth_secret_missing",
+        )
+
+    if _is_request_authenticated(request, settings):
+        return
+
+    response_headers: dict[str, str] | None = None
+    if settings.auth_mode in {"bearer", "either"}:
+        response_headers = {"WWW-Authenticate": "Bearer"}
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="unauthorized_client",
+        headers=response_headers,
+    )
+
+
+def _resolve_rate_limit_policy(
+    path: str,
+    settings: ServiceSecuritySettings,
+) -> tuple[int, int]:
+    if path == "/enroll":
+        return (
+            settings.enroll_rate_limit_max_requests,
+            settings.enroll_rate_limit_window_seconds,
+        )
+
+    return (
+        settings.verify_rate_limit_max_requests,
+        settings.verify_rate_limit_window_seconds,
+    )
+
+
+def _is_integrity_verifier_ready(backend_env: str) -> bool:
+    if backend_env == "dev":
+        return True
+
+    integrity_settings = IntegrityVerifierSettings.from_env()
+    if integrity_settings.mode != IntegrityVerifierMode.GOOGLE:
+        return False
+    if integrity_settings.android_package_name == "":
+        return False
+    if integrity_settings.credentials_file == "" and integrity_settings.credentials_json == "":
+        return False
+    return True
+
+
+def _is_cors_ready(settings: ServiceSecuritySettings) -> bool:
+    if settings.backend_env == "dev":
+        return True
+    if not settings.allowed_origins:
+        return False
+    return "*" not in settings.allowed_origins
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    correlation_id = _ensure_request_correlation_id(request)
     response = await call_next(request)
     response.headers["X-Correlation-ID"] = correlation_id
     return response
 
 
 @app.middleware("http")
-async def verify_rate_limit_middleware(request: Request, call_next):
-    if request.url.path == "/verify":
-        client_host = request.client.host if request.client else "unknown"
-        bucket_key = f"{client_host}:{request.url.path}"
-        now = time.time()
+async def sensitive_auth_middleware(request: Request, call_next):
+    if request.method == "OPTIONS" or not _is_sensitive_path(request.url.path):
+        return await call_next(request)
 
-        with _verify_rate_lock:
-            bucket = _verify_rate_buckets[bucket_key]
+    correlation_id = _ensure_request_correlation_id(request)
+    settings = _get_service_security_settings()
 
-            while bucket and now - bucket[0] > VERIFY_RATE_LIMIT_WINDOW_SECONDS:
-                bucket.popleft()
+    try:
+        _enforce_sensitive_route_auth(request, settings)
+    except HTTPException as error:
+        detail = error.detail if isinstance(error.detail, str) else "request_denied"
 
-            if len(bucket) >= VERIFY_RATE_LIMIT_MAX_REQUESTS:
-                correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
+        log_audit_event(
+            event_name="auth_denied",
+            correlation_id=correlation_id,
+            metadata={
+                "path": request.url.path,
+                "method": request.method,
+                "reason": detail,
+            },
+        )
+
+        response_headers = {"X-Correlation-ID": correlation_id}
+        if error.headers:
+            response_headers.update(error.headers)
+
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"detail": detail, "correlation_id": correlation_id},
+            headers=response_headers,
+        )
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def sensitive_rate_limit_middleware(request: Request, call_next):
+    if request.method == "OPTIONS" or not _is_sensitive_path(request.url.path):
+        return await call_next(request)
+
+    settings = _get_service_security_settings()
+    max_requests, window_seconds = _resolve_rate_limit_policy(request.url.path, settings)
+
+    if max_requests <= 0 or window_seconds <= 0:
+        return await call_next(request)
+
+    client_host = request.client.host if request.client else "unknown"
+    bucket_key = f"{client_host}:{request.url.path}"
+    now = time.time()
+
+    with _verify_rate_lock:
+        bucket = _verify_rate_buckets[bucket_key]
+
+        while bucket and now - bucket[0] > window_seconds:
+            bucket.popleft()
+
+        if len(bucket) >= max_requests:
+            correlation_id = _ensure_request_correlation_id(request)
+
+            if request.url.path == "/verify":
                 decision = rate_limited_decision(correlation_id)
 
                 log_audit_event(
@@ -364,7 +705,7 @@ async def verify_rate_limit_middleware(request: Request, call_next):
                     correlation_id=correlation_id,
                     decision_status=decision.decision_status.value,
                     reason_codes=decision.reason_codes,
-                    metadata={"reason": "rate_limited"},
+                    metadata={"reason": "rate_limited", "path": request.url.path},
                 )
 
                 content: dict[str, Any] = {
@@ -374,24 +715,79 @@ async def verify_rate_limit_middleware(request: Request, call_next):
                     "server_time": int(time.time()),
                 }
                 content.update(decision.to_dict())
-
-                return JSONResponse(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content=content,
-                    headers={
-                        "Retry-After": str(VERIFY_RATE_LIMIT_WINDOW_SECONDS),
-                        "X-Correlation-ID": correlation_id,
-                    },
+            else:
+                log_audit_event(
+                    event_name="abuse_rate_limited",
+                    correlation_id=correlation_id,
+                    metadata={"path": request.url.path, "client_host": client_host},
                 )
+                content = {
+                    "detail": "rate_limited",
+                    "correlation_id": correlation_id,
+                }
 
-            bucket.append(now)
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content=content,
+                headers={
+                    "Retry-After": str(window_seconds),
+                    "X-Correlation-ID": correlation_id,
+                },
+            )
+
+        bucket.append(now)
 
     return await call_next(request)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, error: Exception):
+    correlation_id = _ensure_request_correlation_id(request)
+    _service_logger.exception("Unhandled backend error on %s", request.url.path)
+
+    log_audit_event(
+        event_name="internal_error",
+        correlation_id=correlation_id,
+        metadata={"path": request.url.path, "method": request.method},
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "internal_server_error", "correlation_id": correlation_id},
+        headers={"X-Correlation-ID": correlation_id},
+    )
 
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness_check(request: Request) -> dict[str, Any]:
+    correlation_id = _resolve_correlation_id(request, None)
+    settings = _get_service_security_settings()
+
+    checks = {
+        "client_auth_ready": _is_client_auth_ready(settings),
+        "cors_ready": _is_cors_ready(settings),
+        "integrity_verifier_ready": _is_integrity_verifier_ready(settings.backend_env),
+    }
+    service_status = "ready" if all(checks.values()) else "not_ready"
+
+    if service_status != "ready":
+        log_audit_event(
+            event_name="service_readiness_not_ready",
+            correlation_id=correlation_id,
+            metadata={"checks": checks, "backend_env": settings.backend_env},
+        )
+
+    return {
+        "status": service_status,
+        "backend_env": settings.backend_env,
+        "checks": checks,
+        "correlation_id": correlation_id,
+    }
 
 
 @app.post("/enroll")
