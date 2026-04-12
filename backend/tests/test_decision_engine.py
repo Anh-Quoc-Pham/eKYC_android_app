@@ -77,6 +77,48 @@ def test_review_when_device_trust_is_unavailable():
     assert result.retry_policy == RetryPolicy.WAIT_BEFORE_RETRY
 
 
+def test_transient_integrity_verdict_emits_specific_reason_code():
+    result = evaluate_decision(
+        verified=True,
+        verify_reason="ok",
+        correlation_id="corr-trust-transient-001",
+        risk_context={
+            "device_trust": {
+                "status": "unavailable",
+                "provider": "play_integrity_server",
+                "verification_status": "transient_error",
+                "detail": "integrity_service_temporarily_unavailable",
+            }
+        },
+    )
+
+    assert result.decision_status == DecisionStatus.REVIEW
+    assert ReasonCodes.DEVICE_TRUST_UNAVAILABLE in result.reason_codes
+    assert ReasonCodes.DEVICE_TRUST_TRANSIENT_ERROR in result.reason_codes
+    assert result.retry_policy == RetryPolicy.WAIT_BEFORE_RETRY
+
+
+def test_invalid_integrity_verdict_maps_to_reject_with_specific_reason_code():
+    result = evaluate_decision(
+        verified=True,
+        verify_reason="ok",
+        correlation_id="corr-trust-invalid-001",
+        risk_context={
+            "device_trust": {
+                "status": "low",
+                "provider": "play_integrity_server",
+                "verification_status": "invalid",
+                "detail": "request_hash_mismatch",
+            }
+        },
+    )
+
+    assert result.decision_status == DecisionStatus.REJECT
+    assert ReasonCodes.DEVICE_TRUST_LOW in result.reason_codes
+    assert ReasonCodes.DEVICE_TRUST_INVALID_TOKEN in result.reason_codes
+    assert result.retry_allowed is False
+
+
 def test_verify_requires_device_trust_signal_when_enforced():
     result = evaluate_decision(
         verified=True,

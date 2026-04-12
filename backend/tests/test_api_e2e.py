@@ -79,9 +79,11 @@ def test_enroll_and_verify_success_then_replay_detected(client: TestClient):
         "proof": proof,
         "risk_context": {
             "device_trust": {
-                "status": "trusted",
-                "provider": "e2e_test",
-                "detail": "explicit_trust_signal",
+                "status": "unknown",
+                "provider": "play_integrity_native",
+                "detail": "token_acquired_pending_server_verification",
+                "integrity_token": "mock_trusted_token",
+                "request_hash": "unused_in_mock_mode",
             }
         },
     }
@@ -218,9 +220,11 @@ def test_correlation_id_propagates_from_header_to_response_and_logs(
             "proof": proof,
             "risk_context": {
                 "device_trust": {
-                    "status": "trusted",
-                    "provider": "e2e_test",
+                    "status": "unknown",
+                    "provider": "play_integrity_native",
                     "detail": "header_propagation",
+                    "integrity_token": "mock_trusted_token",
+                    "request_hash": "unused_in_mock_mode",
                 }
             },
         },
@@ -232,3 +236,197 @@ def test_correlation_id_propagates_from_header_to_response_and_logs(
 
     assert captured_events
     assert all(event["correlation_id"] == correlation_id for event in captured_events)
+
+
+def test_verify_missing_integrity_token_returns_review(client: TestClient):
+    id_hash = hashlib.sha256(b"101010101010").hexdigest()
+    private_key = 135791113
+    public_key = pow(backend_main.G, private_key, backend_main.P)
+
+    enroll_response = client.post(
+        "/enroll",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_missing_token",
+            "public_key": str(public_key),
+        },
+    )
+    assert enroll_response.status_code == 200
+
+    proof = _build_valid_proof(
+        id_hash=id_hash,
+        private_key=private_key,
+        session_nonce="nonce-missing-token-001",
+        random_nonce=24682468,
+    )
+
+    verify_response = client.post(
+        "/verify",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_missing_token",
+            "public_key": str(public_key),
+            "proof": proof,
+            "risk_context": {
+                "device_trust": {
+                    "status": "unknown",
+                    "provider": "play_integrity_native",
+                    "detail": "token_missing",
+                }
+            },
+        },
+    )
+
+    payload = verify_response.json()
+    assert verify_response.status_code == 200
+    assert payload["verified"] is True
+    assert payload["decision_status"] == "REVIEW"
+    assert payload["retry_allowed"] is True
+    assert "DEVICE_TRUST_UNAVAILABLE" in payload["reason_codes"]
+
+
+def test_verify_invalid_integrity_token_returns_reject(client: TestClient):
+    id_hash = hashlib.sha256(b"202020202020").hexdigest()
+    private_key = 445566778
+    public_key = pow(backend_main.G, private_key, backend_main.P)
+
+    enroll_response = client.post(
+        "/enroll",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_invalid_token",
+            "public_key": str(public_key),
+        },
+    )
+    assert enroll_response.status_code == 200
+
+    proof = _build_valid_proof(
+        id_hash=id_hash,
+        private_key=private_key,
+        session_nonce="nonce-invalid-token-001",
+        random_nonce=55667788,
+    )
+
+    verify_response = client.post(
+        "/verify",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_invalid_token",
+            "public_key": str(public_key),
+            "proof": proof,
+            "risk_context": {
+                "device_trust": {
+                    "status": "unknown",
+                    "provider": "play_integrity_native",
+                    "integrity_token": "mock_invalid_token",
+                    "request_hash": "unused_in_mock_mode",
+                }
+            },
+        },
+    )
+
+    payload = verify_response.json()
+    assert verify_response.status_code == 200
+    assert payload["decision_status"] == "REJECT"
+    assert payload["retry_allowed"] is False
+    assert "DEVICE_TRUST_LOW" in payload["reason_codes"]
+
+
+def test_verify_transient_integrity_error_returns_review_retryable(client: TestClient):
+    id_hash = hashlib.sha256(b"303030303030").hexdigest()
+    private_key = 556677889
+    public_key = pow(backend_main.G, private_key, backend_main.P)
+
+    enroll_response = client.post(
+        "/enroll",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_transient",
+            "public_key": str(public_key),
+        },
+    )
+    assert enroll_response.status_code == 200
+
+    proof = _build_valid_proof(
+        id_hash=id_hash,
+        private_key=private_key,
+        session_nonce="nonce-transient-token-001",
+        random_nonce=66778899,
+    )
+
+    verify_response = client.post(
+        "/verify",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_transient",
+            "public_key": str(public_key),
+            "proof": proof,
+            "risk_context": {
+                "device_trust": {
+                    "status": "unknown",
+                    "provider": "play_integrity_native",
+                    "integrity_token": "mock_transient_token",
+                    "request_hash": "unused_in_mock_mode",
+                }
+            },
+        },
+    )
+
+    payload = verify_response.json()
+    assert verify_response.status_code == 200
+    assert payload["decision_status"] == "REVIEW"
+    assert payload["retry_allowed"] is True
+    assert payload["retry_policy"] == "WAIT_BEFORE_RETRY"
+    assert "DEVICE_TRUST_UNAVAILABLE" in payload["reason_codes"]
+
+
+def test_non_dev_mock_mode_returns_configuration_review(
+    client: TestClient,
+    monkeypatch,
+):
+    monkeypatch.setenv("EKYC_BACKEND_ENV", "prod")
+    monkeypatch.setenv("EKYC_INTEGRITY_VERIFIER_MODE", "mock")
+
+    id_hash = hashlib.sha256(b"404040404040").hexdigest()
+    private_key = 998877665
+    public_key = pow(backend_main.G, private_key, backend_main.P)
+
+    enroll_response = client.post(
+        "/enroll",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_nondev_mock",
+            "public_key": str(public_key),
+        },
+    )
+    assert enroll_response.status_code == 200
+
+    proof = _build_valid_proof(
+        id_hash=id_hash,
+        private_key=private_key,
+        session_nonce="nonce-nondev-mock-001",
+        random_nonce=77889911,
+    )
+
+    verify_response = client.post(
+        "/verify",
+        json={
+            "id_hash": id_hash,
+            "encrypted_pii": "ciphertext_payload_nondev_mock",
+            "public_key": str(public_key),
+            "proof": proof,
+            "risk_context": {
+                "device_trust": {
+                    "status": "trusted",
+                    "provider": "mock",
+                    "integrity_token": "mock_trusted_token",
+                }
+            },
+        },
+    )
+
+    payload = verify_response.json()
+    assert verify_response.status_code == 200
+    assert payload["decision_status"] == "REVIEW"
+    assert payload["retry_allowed"] is True
+    assert "DEVICE_TRUST_UNAVAILABLE" in payload["reason_codes"]

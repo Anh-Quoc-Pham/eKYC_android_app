@@ -107,5 +107,65 @@ void main() {
       );
       expect(result.payload['correlation_id'], correlationId);
     });
+
+    test('attaches play integrity evidence in verify payload', () async {
+      final client = _RecordingClient(
+        statusCode: 200,
+        responseBody: {
+          'verified': false,
+          'reason': 'ok',
+          'score': 0.0,
+          'decision_status': 'REVIEW',
+          'reason_codes': <String>['DEVICE_TRUST_UNAVAILABLE'],
+          'user_message_key': 'decision.review.device_trust_pending',
+          'retry_allowed': true,
+          'retry_reason': 'device_trust_unavailable',
+          'retry_policy': 'WAIT_BEFORE_RETRY',
+          'correlation_id': 'cid-integrity-attach-001',
+          'risk_signals': <String, dynamic>{},
+        },
+      );
+
+      final service = ZkpService(
+        baseUrl: 'http://localhost:8000',
+        httpClient: client,
+      );
+
+      const riskContext = VerificationRiskContext(
+        deviceTrust: DeviceTrustSignal(
+          status: DeviceTrustStatus.unknown,
+          provider: 'play_integrity_native',
+          detail: 'token_acquired_pending_server_verification',
+          integrityToken: 'native_token_payload',
+          requestHash: 'request_hash_payload',
+          tokenSource: 'play_integrity_standard',
+          retryable: false,
+        ),
+      );
+
+      await service.verify(
+        idHash: 'c' * 64,
+        encryptedPii: 'ciphertext_payload',
+        publicKey: BigInt.from(11),
+        proof: SchnorrProof(
+          commitment: BigInt.one,
+          challenge: BigInt.one,
+          response: BigInt.one,
+          sessionNonce: 'nonce-integrity-evidence',
+        ),
+        riskContext: riskContext,
+        correlationId: 'cid-integrity-attach-001',
+      );
+
+      final requestDeviceTrust =
+          ((client.lastJsonBody ?? const {})['risk_context']
+                  as Map<String, dynamic>)['device_trust']
+              as Map<String, dynamic>;
+
+      expect(requestDeviceTrust['integrity_token'], 'native_token_payload');
+      expect(requestDeviceTrust['request_hash'], 'request_hash_payload');
+      expect(requestDeviceTrust['token_source'], 'play_integrity_standard');
+      expect(requestDeviceTrust['token_present'], isTrue);
+    });
   });
 }
