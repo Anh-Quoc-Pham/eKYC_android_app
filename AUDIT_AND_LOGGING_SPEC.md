@@ -41,6 +41,7 @@ Metadata sanitization redacts keys containing sensitive tokens:
 
 - `encrypted_pii`, `full_name`, `date_of_birth`, `cccd`
 - `proof`, `ciphertext`, `iv`, `tag`, `aad_hash`
+- `integrity_token`, `play_integrity_token`, `attestation_token`
 
 Any key matching those keywords is replaced with `[redacted]` recursively.
 
@@ -56,7 +57,13 @@ Any key matching those keywords is replaced with `[redacted]` recursively.
 ## Security Notes
 - Do not log decrypted user attributes.
 - Do not log private keys or raw proof internals.
+- Do not log raw Play Integrity tokens.
 - Treat correlation id as operational metadata, not user identity.
+
+## Integrity Event Metadata Policy
+- `integrity_check_result` logs verifier status metadata only:
+  - status, provider, detail, verifier mode, retryable, token_present, error_code.
+- Raw token material is excluded from emitted metadata and from normalized risk signals.
 
 ## Validation
 - Confirm every `/verify` outcome emits `final_decision_issued`.

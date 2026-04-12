@@ -1,7 +1,7 @@
 # Android Pilot Readiness
 
 ## Executive Summary
-The project now has a pilot-grade decision and audit foundation with deterministic retry behavior and correlation tracing. Core architecture priorities are implemented; device integrity is intentionally scaffolded and requires final production integration.
+The project now has a pilot-grade decision/audit foundation plus a real Play Integrity code path from Android app to backend verifier. The integration is implemented in-repo and test-covered, while full production activation still requires external Google Cloud/Play Console credential setup.
 
 ## Priority Status (A-E)
 
@@ -21,12 +21,13 @@ Status: COMPLETE
 - Verify/rate-limit paths emit traceable decision events.
 
 ### C) Android Integrity/Trust Signals
-Status: SCAFFOLDED
+Status: IMPLEMENTED IN REPO, EXTERNAL SETUP PENDING
 
-- Device trust abstraction and dev mocks are active.
-- Production path currently uses safe placeholder provider.
-- Verify decision path enforces trust-signal presence as safe default.
-- Real Play Integrity attestation verification is still required.
+- Native MethodChannel bridge requests real Play Integrity tokens on Android.
+- Flutter trust provider attaches integrity evidence to verify flow.
+- Backend verifies token via verifier module (`mock`/`google`) and normalizes verdict.
+- Non-dev mock mode is treated as configuration error (safe non-pass).
+- Final production verification still depends on cloud/package/credentials setup.
 
 ### D) Retry UX And User Flow
 Status: COMPLETE (pilot scope)
@@ -49,12 +50,14 @@ Status: COMPLETE
 - Flutter analyze: pass.
 - Flutter tests: pass.
 - Backend pytest suite: pass.
+- Android debug build: pass.
 
 ## Manual Actions Required Before External Production Launch
-1. Implement real Play Integrity integration and backend token verification.
-2. Route audit logs to centralized SIEM with retention/access controls.
-3. Add runbook for manual review queue and escalation SLA.
-4. Add staged penetration and abuse testing on Android builds.
+1. Enable/configure Play Integrity API in Google Cloud and Play Console linkage.
+2. Provision backend service account and secure credential delivery.
+3. Configure non-dev backend env (`EKYC_INTEGRITY_VERIFIER_MODE=google`, package, credentials).
+4. Route audit logs to centralized SIEM with retention/access controls.
+5. Add staged penetration and abuse testing on Android builds.
 
 ## Manual Steps Matrix
 
@@ -64,11 +67,12 @@ Status: COMPLETE
 - Audit logging with recursive sensitive-field redaction.
 - Retry/failure UI mapping by decision status and policy.
 - Safety tests for contract, redaction, correlation, rate limit, and network fallback.
+- Real Play Integrity app-side token acquisition path (Android native bridge).
+- Backend integrity verifier module and verdict normalization path.
 
 ### Scaffolded only (not production-complete)
-- Android trust integration layer (`DeviceTrustService` + provider abstraction).
-- Non-dev default trust provider (`PlayIntegrityScaffoldProvider`) returning unavailable.
-- Decision behavior for unavailable/low trust signals.
+- Dev mock trust modes (`mock_trusted`, `mock_low`, `mock_unavailable`).
+- Optional fallback placeholder provider for explicit configuration-missing cases.
 
 ### Requires human setup outside repository
 - Cloud/GCP setup for Play Integrity verification backend trust chain.
@@ -77,11 +81,11 @@ Status: COMPLETE
 - Manual review operations process and incident escalation ownership.
 
 ### Required for real Play Integrity activation
-1. Android token acquisition flow (nonce, request, token retrieval) in app layer.
-2. Backend verification path against Google integrity verdict.
-3. Binding of token to session correlation and anti-replay checks.
-4. Trust-score mapping signed off with security owner.
-5. Staging soak validation with monitoring and rollback criteria.
+1. Google Cloud project setup and Play Integrity API enablement.
+2. Service account creation and permission grant for decode API.
+3. Configure backend credentials and package-name verification env vars.
+4. Run staging verification against real tokens/devices.
+5. Security sign-off for trust thresholds and rollout criteria.
 
 ### Required for release/signing completion
 1. Production keystore creation and secured custody.
@@ -91,7 +95,7 @@ Status: COMPLETE
 5. Final human approval gate for pilot cohort rollout.
 
 ## Pilot Go/No-Go
-Recommendation: GO for controlled Android pilot with internal/staged users, with explicit acknowledgment that device integrity is scaffolded (not final production attestation).
+Recommendation: GO for controlled Android pilot with explicit phase-2 scope. Treat real production activation as conditional on external Play Integrity setup completion and staging verification sign-off.
 
 ## Suggested Pilot Gate Checklist
 - [ ] Staging uses HTTPS-only backend endpoint.

@@ -54,6 +54,20 @@ Rules:
 - `staging` and `prod` require `https` endpoints.
 - If staging/prod URL is missing, app fails fast at startup with config error.
 
+Play Integrity app-side settings:
+
+- `EKYC_PLAY_INTEGRITY_ENABLED=true|false`
+- `EKYC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=<number>`
+- `EKYC_DEVICE_TRUST_MODE=mock_trusted|mock_low|mock_unavailable` (dev only)
+
+Backend Play Integrity settings:
+
+- `EKYC_BACKEND_ENV=dev|staging|prod`
+- `EKYC_INTEGRITY_VERIFIER_MODE=mock|google`
+- `EKYC_PLAY_INTEGRITY_ANDROID_PACKAGE=<applicationId>`
+- `EKYC_PLAY_INTEGRITY_CREDENTIALS_FILE=<service-account-json-path>` or
+	`EKYC_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON=<inline-json>`
+
 ## 3) Run Flutter App
 
 From workspace root:
@@ -82,6 +96,12 @@ Production build example:
 flutter build apk --release --dart-define=EKYC_ENV=prod --dart-define=EKYC_API_BASE_URL_PROD=https://api.example.com
 ```
 
+Staging with Play Integrity example:
+
+```powershell
+flutter run --dart-define=EKYC_ENV=staging --dart-define=EKYC_API_BASE_URL_STAGING=https://staging.example.com --dart-define=EKYC_PLAY_INTEGRITY_ENABLED=true --dart-define=EKYC_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=1234567890123
+```
+
 ## 4) Backend End-to-End Tests
 
 From workspace root:
@@ -98,7 +118,13 @@ pytest -q backend/tests/test_api_e2e.py
 ```powershell
 flutter analyze
 flutter test
-pytest -q backend/tests/test_api_e2e.py
+pytest -q backend/tests
+```
+
+Android native compile validation:
+
+```powershell
+flutter build apk --debug --dart-define=EKYC_ENV=dev --dart-define=EKYC_API_BASE_URL_DEV=http://10.0.2.2:8000
 ```
 
 ## 6) CI (GitHub Actions)

@@ -1,76 +1,115 @@
 # IMPLEMENTATION_PLAN
 
-## 1. Architecture Findings
+## Phase
+- Current phase: **Phase 2 - Real Play Integrity Integration**
+- Goal: replace non-dev trust scaffold with real Android -> backend Play Integrity verification path while preserving phase-1 decision/audit baseline.
+- Status: **Implemented in repository with external setup dependencies still required for production activation**.
 
-### Frontend (Flutter)
-- Android-first eKYC flow: `welcome -> ocr -> review -> face -> result`.
-- Stateful session model in `lib/services/ekyc_session.dart` is the cross-screen source of truth.
-- Backend integration is centralized in `lib/services/zkp_service.dart`.
-- Decision UX now depends on normalized backend decision fields instead of legacy binary status.
+## 1. Findings From Current Baseline
 
-### Backend (FastAPI)
-- API surface remains: `GET /health`, `POST /enroll`, `POST /verify`.
-- Decision normalization and retry policy are in `backend/decision_engine.py`.
-- Structured audit logs with redaction are in `backend/audit_logging.py`.
-- Correlation-id middleware + decisionized verify responses are in `backend/main.py`.
+### Frontend insertion points
+- Verify trigger is in `lib/screens/face_scan_screen.dart` via `ZkpService.submitPhase3(...)`.
+- Existing trust path is `DeviceTrustService.evaluate()` in `lib/services/device_trust_service.dart`.
+- Current trust model does not carry raw integrity token; only status/score/provider/detail in `lib/models/decision_models.dart`.
+- Config is centralized in `lib/config/app_config.dart` with env separation (`dev/staging/prod`).
+- Android native entrypoint exists only as `MainActivity` with no platform channel yet.
 
-## 2. File And Module Targets
+### Backend insertion points
+- Request models and verify orchestration are in `backend/main.py`.
+- Decision mapping is centralized in `backend/decision_engine.py` and already enforces trust-signal presence for verify.
+- Structured audit logging and redaction are in `backend/audit_logging.py`.
+- There is currently no server-side Play Integrity token verification module.
+
+## 2. Architecture Insertion Points
+
+- Android-side token acquisition is inserted at trust provider layer (`DeviceTrustService`) and invoked only in verify flow entrypoint (`FaceScanScreen`).
+- Backend-side token verification is inserted at `/verify` orchestration before ZKP decision evaluation.
+- Existing decision engine remains the only policy engine; Play Integrity verdict is normalized into `device_trust` signal consumed by decision logic.
+
+## 3. File/Module Targets
+
+### App / Android
+- `android/app/build.gradle.kts`
+- `android/app/src/main/kotlin/com/aq/ekyc/ekyc_app/MainActivity.kt`
+- `lib/config/app_config.dart`
+- `lib/models/decision_models.dart`
+- `lib/services/device_trust_service.dart`
+- `lib/services/zkp_service.dart`
+- `lib/screens/face_scan_screen.dart`
+- `test/device_trust_service_test.dart`
+- `test/zkp_service_test.dart`
 
 ### Backend
 - `backend/main.py`
 - `backend/decision_engine.py`
-- `backend/audit_logging.py`
-- `backend/tests/test_api_e2e.py`
+- `backend/integrity_verifier.py` (new)
+- `backend/requirements.txt`
 - `backend/tests/test_decision_engine.py`
-- `backend/tests/test_audit_logging.py`
+- `backend/tests/test_api_e2e.py`
+- `backend/tests/test_integrity_verifier.py` (new)
 
-### Frontend
-- `lib/models/decision_models.dart`
-- `lib/services/zkp_service.dart`
-- `lib/services/ekyc_session.dart`
-- `lib/services/device_trust_service.dart`
-- `lib/screens/face_scan_screen.dart`
-- `lib/screens/review_screen.dart`
-- `lib/screens/ocr_camera_screen.dart`
-- `lib/screens/result_screen.dart`
-- `test/decision_models_test.dart`
-- `test/device_trust_service_test.dart`
-- `test/zkp_service_test.dart`
-- `test/result_screen_test.dart`
-
-### Docs
-- `DECISION_ENGINE_SPEC.md`
-- `AUDIT_AND_LOGGING_SPEC.md`
+### Documentation
+- `IMPLEMENTATION_PLAN.md`
 - `INTEGRITY_INTEGRATION_NOTES.md`
 - `ANDROID_PILOT_READINESS.md`
-- `IMPLEMENTATION_PLAN.md` (this file)
+- `DECISION_ENGINE_SPEC.md`
+- `PLAY_INTEGRITY_PHASE2.md` (new)
 
-## 3. Assumptions
-- Keep API evolution additive and backward compatible with legacy fields.
-- Android is the pilot platform; iOS trust integration is out-of-scope for this phase.
-- Play Integrity production token verification is intentionally deferred to next phase.
-- No secrets or signing credentials are committed to repository.
+## 4. Assumptions
+- Android-only scope continues; iOS integrity path remains out-of-scope.
+- External Google Cloud/Play Console setup may be absent during local testing.
+- Repo code must remain mergeable and safe when production credentials are missing.
+- Existing decision and audit contracts remain backward compatible.
 
-## 4. Risk Notes
-- If trust signal is absent in verify flow, auto-pass must be prevented.
-- Logs must never contain raw PII or sensitive crypto fields.
-- Retry UX must remain deterministic and policy-driven to avoid user confusion.
-- Manual operations (signing, Play Integrity cloud setup, SIEM wiring) remain external dependencies.
+## 5. Risk Notes
+- Native Play Integrity API integration may fail without Play services/Play Store runtime support.
+- Misconfiguration in non-dev must result in non-pass outcomes, never implicit trust.
+- Token decode failures must map to deterministic review/reject policy.
+- External setup dependencies must be explicit in docs to avoid false completion claims.
 
-## 5. What Changed In This Hardening Pass
-- Enforced verify-time trust-signal safety default in decision engine:
-  - missing trust signal cannot auto-pass and maps to review/unavailable.
-- Hardened app trust service with fail-safe unavailable fallback on provider exceptions.
-- Added safety tests for:
-  - audit log redaction,
-  - correlation-id propagation,
-  - retry-limit response contract,
-  - network fallback decision behavior,
-  - Result UI mapping for PASS/REVIEW/REJECT.
-- Updated readiness docs with explicit manual step boundaries.
+## 6. What Changed (Implemented In Repo)
 
-## 6. What Remains Manual
-- Real Play Integrity activation (Android token flow + backend verification path).
-- Cloud-side policy setup and key management for integrity verification.
-- SIEM ingestion/retention setup for audit logs.
-- Release signing, keystore custody, Play Console rollout workflow.
+### Android / Flutter
+- Added real native Play Integrity bridge through MethodChannel in `MainActivity` with:
+   - provider preparation lifecycle,
+   - token request lifecycle,
+   - structured failure categories (`play_services_unavailable`, `transient_error`, `provider_invalid`, `configuration_error`, `unexpected_error`).
+- Extended trust model (`DeviceTrustSignal`) to carry integrity evidence and failure metadata.
+- Extended `DeviceTrustService`:
+   - dev: explicit mock mode preserved,
+   - non-dev: real MethodChannel provider if configured,
+   - fail-safe unavailable when configuration missing or provider fails.
+- Added deterministic integrity request-hash binding helpers in `ZkpService` and wired correlation-id + request-hash usage from `FaceScanScreen`.
+
+### Backend
+- Added `backend/integrity_verifier.py`:
+   - verifier modes: `mock` and `google`,
+   - normalized verdicts: `trusted`, `untrusted`, `unavailable`, `invalid`, `transient_error`, `configuration_error`,
+   - request hash/package validation and verdict normalization into existing trust signal.
+- Integrated verifier into `backend/main.py` verify flow before decision evaluation.
+- Preserved privacy guarantees:
+   - no raw integrity token in audit metadata,
+   - dedicated metadata filtering for integrity log events,
+   - redaction rules expanded defensively.
+- Extended decision taxonomy with integrity-specific reason codes while preserving existing policy structure.
+
+### Tests
+- Added backend verifier unit tests (`test_integrity_verifier.py`).
+- Extended backend e2e tests for missing/invalid/transient/config integrity scenarios.
+- Extended Flutter tests for:
+   - MethodChannel provider behavior,
+   - token attachment in service payload,
+   - existing decision mapping regressions.
+
+## 7. What Remains Manual (Outside Repo)
+- Google Cloud and Play Console setup for Play Integrity API trust chain.
+- Service account provisioning and secure credentials distribution to backend runtime.
+- Non-dev environment variable rollout for verifier mode/package/credentials.
+- Security sign-off for integrity verdict thresholds and rollout policy.
+- Release signing/Play Console operational steps (separate from code integration).
+
+## 8. Validation Status
+- Flutter analyze: passed.
+- Flutter tests: passed.
+- Backend tests: passed.
+- Android debug build: passed (`flutter build apk --debug`).

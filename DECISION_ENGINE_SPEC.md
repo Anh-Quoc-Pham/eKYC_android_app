@@ -34,7 +34,7 @@ Current normalized reason codes:
 
 - OCR quality: `OCR_LOW_CONFIDENCE`, `OCR_FIELD_MISMATCH`, `DOCUMENT_GLARE`, `DOCUMENT_BLUR`, `DOCUMENT_CROP_INVALID`
 - Face/liveness: `FACE_MISMATCH`, `LIVENESS_LOW_CONFIDENCE`
-- Device trust: `DEVICE_TRUST_UNAVAILABLE`, `DEVICE_TRUST_LOW`
+- Device trust: `DEVICE_TRUST_UNAVAILABLE`, `DEVICE_TRUST_LOW`, `DEVICE_TRUST_INVALID_TOKEN`, `DEVICE_TRUST_TRANSIENT_ERROR`, `DEVICE_TRUST_CONFIGURATION_ERROR`
 - Session/network: `SESSION_RETRY_LIMIT`, `NETWORK_INTERRUPTED`
 - Internal/fallback: `INTERNAL_REVIEW_REQUIRED`, `UNKNOWN_ERROR_SAFE_FALLBACK`
 
@@ -57,12 +57,26 @@ Current normalized reason codes:
 	- `retry_policy=WAIT_BEFORE_RETRY`
 - This prevents silent auto-pass when trust signal is absent.
 
+## Play Integrity Verdict Mapping (Phase 2)
+Backend verifier normalizes token verification into trust statuses before decision mapping:
+
+- `trusted` -> `device_trust.status=trusted` -> decision engine proceeds with normal evaluation.
+- `untrusted` or `invalid` -> `device_trust.status=low` -> reason includes `DEVICE_TRUST_LOW` and outcome trends to `REJECT`.
+- `transient_error` -> `device_trust.status=unavailable` -> reason includes `DEVICE_TRUST_UNAVAILABLE` + `DEVICE_TRUST_TRANSIENT_ERROR`.
+- `configuration_error` -> `device_trust.status=unavailable` -> reason includes `DEVICE_TRUST_UNAVAILABLE` + `DEVICE_TRUST_CONFIGURATION_ERROR`.
+- `token_missing/ambiguous` -> `device_trust.status=unavailable` -> safe `REVIEW` path.
+
+Policy intent:
+- Never auto-pass without verified trust evidence.
+- Prefer `REVIEW` for unavailable/transient/configuration states.
+- Use `REJECT` for invalid/untrusted trust verdicts.
+
 ## Risk Context Input
 Client can submit risk context in both enroll and verify:
 
 - `ocr`: confidence and mismatch/quality flags.
 - `face`: match score and liveness confidence.
-- `device_trust`: status, score, provider, detail.
+- `device_trust`: status, score, provider, detail, integrity evidence metadata.
 - `retry`: attempt count and max attempts.
 - `network_interrupted`: boolean.
 
