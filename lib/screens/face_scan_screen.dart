@@ -61,7 +61,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   Map<String, double>? _referenceSignature;
 
   late final LivenessAction _requiredAction;
-  String _statusText = 'Đang nhận diện khuôn mặt...';
+  String _statusText = 'Đang nhận diện';
 
   DateTime _lastScanTime = DateTime.fromMillisecondsSinceEpoch(0);
   static const Duration _scanDebounce = Duration(milliseconds: 280);
@@ -87,15 +87,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
   String get _activeIdHash => _session.cccdHash;
 
-  String get _challengeLabel {
-    switch (_requiredAction) {
-      case LivenessAction.blink:
-        return 'Hành động ngẫu nhiên: Nháy mắt 1 lần';
-      case LivenessAction.smile:
-        return 'Hành động ngẫu nhiên: Mỉm cười nhẹ';
-    }
-  }
-
   double get _progress {
     if (_canProceed) {
       return 1;
@@ -113,6 +104,15 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     return value.clamp(0, 0.99);
   }
 
+  bool get _showSoftWarning {
+    if (_canProceed) {
+      return false;
+    }
+
+    return _statusText.contains('Không thấy khuôn mặt') ||
+        _statusText.contains('rõ hơn');
+  }
+
   @override
   void initState() {
     super.initState();
@@ -125,7 +125,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
     if (!_session.hasOcrData) {
       _errorMessage =
-          'Thiếu dữ liệu OCR trong phiên làm việc. Hãy quay lại bước quét CCCD.';
+          'Thiếu dữ liệu bước giấy tờ. Vui lòng quay lại bước kiểm tra thông tin.';
       return;
     }
 
@@ -139,7 +139,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
     setState(() {
       _isSubmittingToServer = true;
-      _statusText = 'Đang đóng gói ZKP Proof và gửi lên server...';
+      _statusText = 'Đang xác minh thông tin...';
     });
 
     try {
@@ -238,7 +238,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
   Future<void> _initializeCamera() async {
     if (!_isMobileVisionPlatform) {
       setState(() {
-        _errorMessage = 'Face Scan chỉ hỗ trợ Android và iOS.';
+        _errorMessage = 'Thiết bị này chưa hỗ trợ quét khuôn mặt.';
       });
       return;
     }
@@ -247,7 +247,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     if (!permissionStatus.isGranted) {
       setState(() {
         _errorMessage =
-            'Camera permission bị từ chối. Vui lòng cấp quyền để quét khuôn mặt.';
+            'Cần quyền camera để tiếp tục xác minh khuôn mặt. Vui lòng cấp quyền rồi thử lại.';
       });
       return;
     }
@@ -294,8 +294,9 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       }
 
       setState(() {
-        _errorMessage = 'Không thể khởi tạo camera trước: $error';
+        _errorMessage = 'Không thể bật camera trước. Vui lòng thử lại.';
       });
+      debugPrint('Không thể khởi tạo camera trước: $error');
     }
   }
 
@@ -331,7 +332,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         if (mounted) {
           setState(() {
             _faceDetected = false;
-            _statusText = 'Không thấy khuôn mặt. Hãy đưa mặt vào khung tròn.';
+            _statusText = 'Không thấy khuôn mặt. Vui lòng đưa mặt vào khung.';
           });
         }
         return;
@@ -371,16 +372,16 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         faceMatchPassed = matchScore >= 0.65;
       }
     } else {
-      status = 'Đang lấy điểm mốc khuôn mặt... giữ đầu ổn định.';
+      status = 'Giữ khuôn mặt ổn định trong khung.';
       faceMatchPassed = false;
       matchScore = 0;
     }
 
     if (_livenessPassed || livenessResult.passed) {
       if (faceMatchPassed) {
-        status = 'Đã xác thực liveness và face matching. Bạn có thể tiếp tục.';
+        status = 'Đã sẵn sàng. Nhấn Tiếp tục quét để hoàn tất.';
       } else {
-        status = 'Liveness đạt. Đang đối chiếu đặc trưng khuôn mặt...';
+        status = 'Đang đối chiếu khuôn mặt...';
       }
     } else {
       status = livenessResult.message;
@@ -412,7 +413,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         if (left == null || right == null) {
           return (
             passed: false,
-            message: 'Giữ mặt thẳng camera để đọc trạng thái mắt (blink).',
+            message: 'Giữ mặt thẳng để hệ thống nhận diện tốt hơn.',
           );
         }
 
@@ -422,20 +423,17 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         }
 
         if (_eyesWereOpen && avgEyeOpen < 0.35) {
-          return (passed: true, message: 'Blink đã được ghi nhận.');
+          return (passed: true, message: 'Đã ghi nhận thao tác nháy mắt.');
         }
 
-        return (
-          passed: false,
-          message: 'Vui lòng nháy mắt 1 lần để hoàn tất liveness.',
-        );
+        return (passed: false, message: 'Vui lòng nháy mắt 1 lần.');
 
       case LivenessAction.smile:
         final smile = face.smilingProbability;
         if (smile == null) {
           return (
             passed: false,
-            message: 'Giữ mặt rõ hơn để hệ thống nhận diện nụ cười.',
+            message: 'Giữ khuôn mặt rõ hơn để hệ thống nhận diện.',
           );
         }
 
@@ -446,13 +444,10 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         }
 
         if (_smileFrameStreak >= 2) {
-          return (passed: true, message: 'Nụ cười đã được ghi nhận.');
+          return (passed: true, message: 'Đã ghi nhận thao tác mỉm cười.');
         }
 
-        return (
-          passed: false,
-          message: 'Vui lòng mỉm cười nhẹ để hoàn tất liveness.',
-        );
+        return (passed: false, message: 'Vui lòng mỉm cười nhẹ.');
     }
   }
 
@@ -485,7 +480,6 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     final leftEyeToNose = _distance(leftEye, nose);
     final rightEyeToNose = _distance(rightEye, nose);
 
-    // Dùng tỉ lệ hình học để mô phỏng face matching, không lưu ảnh thô.
     return {
       'nose_to_mouth_ratio': noseToMouth / eyeDistance,
       'left_eye_to_nose_ratio': leftEyeToNose / eyeDistance,
@@ -516,6 +510,34 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
     final dx = p1.x - p2.x;
     final dy = p1.y - p2.y;
     return sqrt(dx * dx + dy * dy).toDouble();
+  }
+
+  void _showSupportHelp() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return const Padding(
+          padding: EdgeInsets.fromLTRB(16, 4, 16, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Tôi gặp khó khăn ở bước này',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+              ),
+              SizedBox(height: 8),
+              Text('1. Đứng ở nơi đủ sáng và giữ máy ngang tầm mắt.'),
+              SizedBox(height: 6),
+              Text('2. Giữ khuôn mặt trọn trong khung và nhìn thẳng.'),
+              SizedBox(height: 6),
+              Text('3. Khi được nhắc, hãy nháy mắt hoặc mỉm cười nhẹ.'),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   InputImage? _inputImageFromCameraImage(
@@ -632,7 +654,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 
     if (_errorMessage != null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Face Scan')),
+        appBar: AppBar(title: const Text('Xác minh tài khoản')),
         body: Center(
           child: Padding(
             padding: EdgeInsets.all(compact ? 16 : 24),
@@ -649,7 +671,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
                     );
                   },
                   icon: const Icon(Icons.arrow_back_outlined),
-                  label: const Text('Quay lại Review'),
+                  label: const Text('Quay lại'),
                 ),
               ],
             ),
@@ -662,8 +684,12 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    if (_isSubmittingToServer) {
+      return const _ProcessingView();
+    }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Face Matching & Liveness')),
+      appBar: AppBar(title: const Text('Xác minh tài khoản')),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -691,8 +717,7 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
             left: pagePadding,
             right: pagePadding,
             child: _TopInstructionCard(
-              fullName: _activeFullName,
-              challenge: _challengeLabel,
+              showWarning: _showSoftWarning,
               compact: compact,
             ),
           ),
@@ -703,12 +728,9 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
             child: _StatusCard(
               statusText: _statusText,
               progress: _progress,
-              livenessPassed: _livenessPassed,
-              faceMatchPassed: _faceMatchPassed,
-              matchScore: _matchScore,
               canProceed: _canProceed,
-              isSubmittingToServer: _isSubmittingToServer,
               onContinue: _canProceed ? _submitPhase3Verification : null,
+              onNeedHelp: _showSupportHelp,
               compact: compact,
             ),
           ),
@@ -719,14 +741,9 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
 }
 
 class _TopInstructionCard extends StatelessWidget {
-  const _TopInstructionCard({
-    required this.fullName,
-    required this.challenge,
-    required this.compact,
-  });
+  const _TopInstructionCard({required this.showWarning, required this.compact});
 
-  final String fullName;
-  final String challenge;
+  final bool showWarning;
   final bool compact;
 
   @override
@@ -741,156 +758,153 @@ class _TopInstructionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.face_retouching_natural, color: Colors.white),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Người dùng: $fullName',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                    fontSize: compact ? 13 : 14,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: compact ? 4 : 6),
-          Text(
-            challenge,
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w600,
-              fontSize: compact ? 13 : 14,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({
-    required this.statusText,
-    required this.progress,
-    required this.livenessPassed,
-    required this.faceMatchPassed,
-    required this.matchScore,
-    required this.canProceed,
-    required this.isSubmittingToServer,
-    required this.onContinue,
-    required this.compact,
-  });
-
-  final String statusText;
-  final double progress;
-  final bool livenessPassed;
-  final bool faceMatchPassed;
-  final double matchScore;
-  final bool canProceed;
-  final bool isSubmittingToServer;
-  final VoidCallback? onContinue;
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context) {
-    final cardColor = canProceed
-        ? const Color(0xFF0E6B6B).withValues(alpha: 0.86)
-        : Colors.black.withValues(alpha: 0.7);
-
-    return AnimatedContainer(
-      duration: AppMotion.medium,
-      curve: AppMotion.standard,
-      padding: EdgeInsets.all(compact ? 12 : 14),
-      decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              if (canProceed)
-                const Icon(Icons.verified, color: Colors.greenAccent)
-              else
-                const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: AppMotion.fast,
-                  switchInCurve: AppMotion.standard,
-                  transitionBuilder: (child, animation) {
-                    return FadeTransition(
-                      opacity: animation,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.08),
-                          end: Offset.zero,
-                        ).animate(animation),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: Text(
-                    statusText,
-                    key: ValueKey<String>(statusText),
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: compact ? 13 : 14,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: compact ? 8 : 10),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: LinearProgressIndicator(
-              minHeight: 8,
-              value: progress,
-              backgroundColor: Colors.white.withValues(alpha: 0.25),
-            ),
+          const Text(
+            'Xác minh tài khoản',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
           ),
           SizedBox(height: compact ? 8 : 10),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              _StatusPill(
-                label: livenessPassed ? 'Liveness: Đạt' : 'Liveness: Chưa đạt',
-                positive: livenessPassed,
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  'Bước 3/4',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
-              _StatusPill(
-                label: 'Match ${(matchScore * 100).toStringAsFixed(0)}%',
-                positive: faceMatchPassed,
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  'Đưa máy ngang tầm mắt',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
           SizedBox(height: compact ? 8 : 10),
+          const Text(
+            'Nhìn thẳng vào màn hình',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+              fontSize: 18,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Khi được nhắc, hãy ${_ActionHint.text}.',
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.92)),
+          ),
+          if (showWarning) ...[
+            SizedBox(height: compact ? 8 : 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFE2BF),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Text(
+                'Khuôn mặt chưa đủ sáng',
+                style: TextStyle(
+                  color: Color(0xFF8A4B0A),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionHint {
+  static const String text = 'nháy mắt hoặc mỉm cười nhẹ';
+}
+
+class _StatusCard extends StatelessWidget {
+  const _StatusCard({
+    required this.statusText,
+    required this.progress,
+    required this.canProceed,
+    required this.onContinue,
+    required this.onNeedHelp,
+    required this.compact,
+  });
+
+  final String statusText;
+  final double progress;
+  final bool canProceed;
+  final VoidCallback? onContinue;
+  final VoidCallback onNeedHelp;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.all(compact ? 12 : 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Đang nhận diện', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 4),
+          Text(
+            statusText,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              color: AppColors.ink,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              minHeight: 8,
+              value: progress,
+              backgroundColor: const Color(0xFFE4EBEE),
+            ),
+          ),
+          const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: isSubmittingToServer ? null : onContinue,
-              icon: isSubmittingToServer
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.arrow_forward),
-              label: Text(
-                isSubmittingToServer ? 'Đang gửi ZKP...' : 'Sang bước kết quả',
-              ),
+            child: ElevatedButton(
+              onPressed: onContinue,
+              child: Text(canProceed ? 'Tiếp tục quét' : 'Tiếp tục quét'),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: onNeedHelp,
+              child: const Text('Tôi gặp khó khăn ở bước này'),
             ),
           ),
         ],
@@ -899,82 +913,87 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.label, required this.positive});
-
-  final String label;
-  final bool positive;
+class _ProcessingView extends StatelessWidget {
+  const _ProcessingView();
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: positive
-            ? Colors.greenAccent.withValues(alpha: 0.2)
-            : Colors.white.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
+    return Scaffold(
+      appBar: AppBar(title: const Text('Xác minh tài khoản')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Container(
+            width: 420,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Đang xác minh',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Quá trình này thường chỉ mất vài giây. Vui lòng không đóng ứng dụng hoặc quay lại.',
+                ),
+                SizedBox(height: 14),
+                _ProcessingRow(label: 'Kiểm tra giấy tờ'),
+                SizedBox(height: 8),
+                _ProcessingRow(label: 'Đối chiếu thông tin'),
+                SizedBox(height: 8),
+                _ProcessingRow(label: 'Xác minh khuôn mặt'),
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
-class _FaceCircleOverlay extends StatefulWidget {
-  const _FaceCircleOverlay();
+class _ProcessingRow extends StatelessWidget {
+  const _ProcessingRow({required this.label});
+
+  final String label;
 
   @override
-  State<_FaceCircleOverlay> createState() => _FaceCircleOverlayState();
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        const SizedBox(width: 8),
+        Text(label),
+      ],
+    );
+  }
 }
 
-class _FaceCircleOverlayState extends State<_FaceCircleOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulseController;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1700),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
+class _FaceCircleOverlay extends StatelessWidget {
+  const _FaceCircleOverlay();
 
   @override
   Widget build(BuildContext context) {
     return IgnorePointer(
-      child: AnimatedBuilder(
-        animation: _pulseController,
-        builder: (_, _) {
-          return CustomPaint(
-            painter: _FaceCircleOverlayPainter(
-              pulse: AppMotion.gentle.transform(_pulseController.value),
-            ),
-            size: Size.infinite,
-          );
-        },
+      child: CustomPaint(
+        painter: _FaceCircleOverlayPainter(),
+        size: Size.infinite,
       ),
     );
   }
 }
 
 class _FaceCircleOverlayPainter extends CustomPainter {
-  _FaceCircleOverlayPainter({required this.pulse});
-
-  final double pulse;
+  _FaceCircleOverlayPainter();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -991,46 +1010,18 @@ class _FaceCircleOverlayPainter extends CustomPainter {
       Paint()..color = Colors.black.withValues(alpha: 0.45),
     );
 
-    final pulseRadius = radius + 10 + (pulse * 12);
-    canvas.drawCircle(
-      center,
-      pulseRadius,
-      Paint()
-        ..color = const Color(0xFF5FD9D3).withValues(alpha: 0.22 * (1 - pulse))
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
-    );
-
     canvas.drawCircle(
       center,
       radius,
       Paint()
-        ..shader = SweepGradient(
-          colors: [
-            const Color(0xFF5FD9D3).withValues(alpha: 0.8),
-            const Color(0xFFFF8A3D).withValues(alpha: 0.75),
-            const Color(0xFF5FD9D3).withValues(alpha: 0.8),
-          ],
-        ).createShader(Rect.fromCircle(center: center, radius: radius))
+        ..color = Colors.white.withValues(alpha: 0.95)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3 + (pulse * 1.4),
-    );
-
-    canvas.drawCircle(
-      center,
-      radius,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Colors.white.withValues(alpha: 0.1),
-            Colors.white.withValues(alpha: 0),
-          ],
-        ).createShader(Rect.fromCircle(center: center, radius: radius)),
+        ..strokeWidth = 3,
     );
   }
 
   @override
   bool shouldRepaint(covariant _FaceCircleOverlayPainter oldDelegate) {
-    return oldDelegate.pulse != pulse;
+    return false;
   }
 }
