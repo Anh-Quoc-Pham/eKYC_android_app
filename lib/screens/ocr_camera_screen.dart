@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +12,8 @@ import '../models/decision_models.dart';
 import '../services/ekyc_session.dart';
 import '../services/ocr_service.dart';
 
+enum OcrPermissionUiState { preAsk, denied, permanentlyDenied }
+
 class OcrCameraScreen extends StatefulWidget {
   const OcrCameraScreen({super.key, required this.cameras});
 
@@ -20,30 +24,61 @@ class OcrCameraScreen extends StatefulWidget {
 }
 
 class _OcrCameraScreenState extends State<OcrCameraScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final OcrService _ocrService = OcrService();
   final EkycSession _session = EkycSession.instance;
 
   CameraController? _cameraController;
   late final AnimationController _scanLineController;
 
-  String? _errorMessage;
+  OcrPermissionUiState _permissionUiState = OcrPermissionUiState.preAsk;
+  String? _fatalError;
   bool _isInitialized = false;
+  bool _isPreparingCamera = false;
+  bool _isRequestingPermission = false;
   bool _isProcessingFrame = false;
   bool _isNavigating = false;
   bool _isTorchOn = false;
   DateTime _lastScanTime = DateTime.fromMillisecondsSinceEpoch(0);
 
+  Timer? _hintTimer;
+  int _hintIndex = 0;
+
   static const Duration _scanDebounce = Duration(milliseconds: 450);
+  static const List<String> _helperHints = <String>[
+    'Tránh bị lóa',
+    'Giữ điện thoại thẳng',
+    'Đưa lại gần hơn một chút',
+    'Giữ yên trong giây lát',
+  ];
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scanLineController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1600),
     )..repeat(reverse: true);
-    _initializeCamera();
+    _hintTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted || _isNavigating || !_isInitialized) {
+        return;
+      }
+      setState(() {
+        _hintIndex = (_hintIndex + 1) % _helperHints.length;
+      });
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || _isInitialized) {
+      return;
+    }
+    if (_permissionUiState == OcrPermissionUiState.preAsk) {
+      return;
+    }
+    _checkPermissionAfterSettings();
   }
 
   bool get _isMobileOcrPlatform {
@@ -56,29 +91,71 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
 
   bool get _isIOS => defaultTargetPlatform == TargetPlatform.iOS;
 
-  Future<void> _initializeCamera() async {
-    if (!_isMobileOcrPlatform) {
+  Future<void> _checkPermissionAfterSettings() async {
+    final status = await Permission.camera.status;
+    if (!mounted || !status.isGranted) {
+      return;
+    }
+    await _prepareCamera();
+  }
+
+  Future<void> _requestCameraPermission() async {
+    if (_isRequestingPermission) {
+      return;
+    }
+    setState(() {
+      _isRequestingPermission = true;
+    });
+
+    try {
+      final permissionStatus = await Permission.camera.request();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (permissionStatus.isGranted) {
+        await _prepareCamera();
+        return;
+      }
+
       setState(() {
-        _errorMessage = 'OCR realtime hiện chỉ hỗ trợ Android và iOS.';
+        _permissionUiState = permissionStatus.isPermanentlyDenied
+            ? OcrPermissionUiState.permanentlyDenied
+            : OcrPermissionUiState.denied;
       });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRequestingPermission = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _prepareCamera() async {
+    if (_isPreparingCamera || _isInitialized) {
       return;
     }
 
-    final permissionStatus = await Permission.camera.request();
-    if (!permissionStatus.isGranted) {
+    if (!_isMobileOcrPlatform) {
       setState(() {
-        _errorMessage =
-            'Camera permission bị từ chối. Vui lòng cấp quyền để quét CCCD.';
+        _fatalError = 'Thiết bị này chưa hỗ trợ chụp giấy tờ bằng camera.';
       });
       return;
     }
 
     if (widget.cameras.isEmpty) {
       setState(() {
-        _errorMessage = 'Không tìm thấy camera trên thiết bị.';
+        _fatalError = 'Không tìm thấy camera trên thiết bị này.';
       });
       return;
     }
+
+    setState(() {
+      _isPreparingCamera = true;
+      _fatalError = null;
+    });
 
     final selectedCamera = widget.cameras.firstWhere(
       (camera) => camera.lensDirection == CameraLensDirection.back,
@@ -106,6 +183,7 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
       setState(() {
         _cameraController = cameraController;
         _isInitialized = true;
+        _isPreparingCamera = false;
       });
     } catch (error) {
       await cameraController.dispose();
@@ -114,8 +192,10 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
       }
 
       setState(() {
-        _errorMessage = 'Không thể khởi tạo camera: $error';
+        _isPreparingCamera = false;
+        _fatalError = 'Không thể bật camera. Vui lòng thử lại.';
       });
+      debugPrint('Không thể khởi tạo camera OCR: $error');
     }
   }
 
@@ -137,7 +217,7 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
         _isTorchOn = nextValue;
       });
     } catch (_) {
-      _showMessage('Thiết bị không hỗ trợ đèn flash ở chế độ hiện tại.');
+      _showMessage('Thiết bị không hỗ trợ đèn flash ở chế độ này.');
     }
   }
 
@@ -260,7 +340,6 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
       return null;
     }
 
-    // Android camera stream outputs YUV420. Convert to NV21 for ML Kit OCR.
     final nv21Bytes = _yuv420ToNv21(image);
     return InputImage.fromBytes(
       bytes: nv21Bytes,
@@ -327,6 +406,8 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _hintTimer?.cancel();
     _scanLineController.dispose();
 
     final controller = _cameraController;
@@ -346,36 +427,43 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
     final compact = AppLayout.isCompact(context);
     final pagePadding = AppLayout.pagePadding(context);
 
-    if (_errorMessage != null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('OCR Camera')),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorMessage!, textAlign: TextAlign.center),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).pushNamedAndRemoveUntil(
-                      AppRoutes.welcome,
-                      (route) => false,
-                    );
-                  },
-                  icon: const Icon(Icons.home_outlined),
-                  label: const Text('Về màn hình chào'),
-                ),
-              ],
-            ),
-          ),
-        ),
+    if (_fatalError != null) {
+      return _OcrFatalErrorView(
+        message: _fatalError!,
+        onBackHome: () {
+          Navigator.of(
+            context,
+          ).pushNamedAndRemoveUntil(AppRoutes.welcome, (route) => false);
+        },
       );
     }
 
-    if (!_isInitialized || _cameraController == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (!_isInitialized) {
+      if (_isPreparingCamera || _isRequestingPermission) {
+        return const _OcrLoadingView();
+      }
+
+      if (_permissionUiState == OcrPermissionUiState.preAsk) {
+        return CameraPermissionPreAskView(
+          onAllowCamera: _requestCameraPermission,
+          onLater: () {
+            Navigator.of(
+              context,
+            ).pushNamedAndRemoveUntil(AppRoutes.welcome, (route) => false);
+          },
+        );
+      }
+
+      return CameraPermissionDeniedView(
+        onOpenSettings: () async {
+          await openAppSettings();
+        },
+        onBack: () {
+          Navigator.of(
+            context,
+          ).pushNamedAndRemoveUntil(AppRoutes.welcome, (route) => false);
+        },
+      );
     }
 
     return Scaffold(
@@ -390,12 +478,12 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: [
-                    Colors.black.withValues(alpha: 0.36),
+                    Colors.black.withValues(alpha: 0.32),
                     Colors.transparent,
                     Colors.transparent,
-                    Colors.black.withValues(alpha: 0.56),
+                    Colors.black.withValues(alpha: 0.58),
                   ],
-                  stops: const [0, 0.22, 0.68, 1],
+                  stops: const [0, 0.2, 0.62, 1],
                 ),
               ),
             ),
@@ -409,38 +497,93 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
               return _CardOverlay(scanProgress: curvedProgress);
             },
           ),
-          Positioned(
-            top: compact ? 22 : 56,
-            left: pagePadding,
-            right: pagePadding,
-            child: Container(
-              padding: EdgeInsets.all(compact ? 12 : 14),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
+          SafeArea(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                pagePadding,
+                compact ? 8 : 12,
+                pagePadding,
+                compact ? 14 : 18,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.document_scanner, color: Colors.white),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                          'OCR Core - CCCD',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
+                      Expanded(
+                        child: Container(
+                          padding: EdgeInsets.all(compact ? 10 : 12),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.42),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.24),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Xác minh tài khoản',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: const Text(
+                                  'Bước 1/4',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Chụp giấy tờ',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'Đưa mặt trước CCCD vào khung',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Hệ thống sẽ tự động chụp khi ảnh rõ và nằm đúng khung.',
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.88),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
+                      const SizedBox(width: 10),
                       IconButton(
                         onPressed: _toggleTorch,
                         style: IconButton.styleFrom(
                           foregroundColor: Colors.white,
-                          backgroundColor: Colors.black.withValues(alpha: 0.24),
+                          backgroundColor: Colors.black.withValues(alpha: 0.42),
+                          side: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.24),
+                          ),
                         ),
                         icon: Icon(
                           _isTorchOn
@@ -450,90 +593,283 @@ class _OcrCameraScreenState extends State<OcrCameraScreen>
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  AnimatedSwitcher(
-                    duration: AppMotion.fast,
-                    switchInCurve: AppMotion.standard,
-                    child: Text(
-                      _isNavigating
-                          ? 'Đã nhận diện thông tin. Đang mở màn hình kiểm tra...'
-                          : 'Đặt CCCD vào khung. Hệ thống nhận diện dữ liệu ngay trên thiết bị.',
-                      key: ValueKey<bool>(_isNavigating),
-                      style: const TextStyle(color: Colors.white),
+                  const Spacer(),
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.all(compact ? 10 : 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Mẹo chụp nhanh',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Đảm bảo giấy tờ nằm trọn trong khung và không bị lóa.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: compact ? 8 : 10),
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: compact ? 10 : 12,
+                      vertical: compact ? 9 : 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.56),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.24),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        AnimatedSwitcher(
+                          duration: AppMotion.fast,
+                          child: Text(
+                            _helperHints[_hintIndex],
+                            key: ValueKey<int>(_hintIndex),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            if (_isNavigating)
+                              const Icon(
+                                Icons.verified,
+                                size: 16,
+                                color: Colors.greenAccent,
+                              )
+                            else
+                              const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _isNavigating
+                                    ? 'Đã nhận diện rõ. Đang chuyển sang bước tiếp theo...'
+                                    : 'Đang nhận diện...',
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.92),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
           ),
-          Positioned(
-            left: pagePadding,
-            right: pagePadding,
-            bottom: compact ? 16 : 24,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: compact ? 10 : 12,
-                      vertical: compact ? 9 : 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.28),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        if (_isNavigating)
-                          const Icon(Icons.verified, color: Colors.greenAccent)
-                        else
-                          const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: AnimatedSwitcher(
-                            duration: AppMotion.fast,
-                            child: Text(
-                              _isNavigating
-                                  ? 'Đang chuyển sang bước Review...'
-                                  : 'Đang quét realtime...',
-                              key: ValueKey<bool>(_isNavigating),
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+        ],
+      ),
+    );
+  }
+}
+
+class CameraPermissionPreAskView extends StatelessWidget {
+  const CameraPermissionPreAskView({
+    super.key,
+    required this.onAllowCamera,
+    required this.onLater,
+  });
+
+  final VoidCallback onAllowCamera;
+  final VoidCallback onLater;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Xác minh tài khoản')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Cho phép dùng camera',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Container(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: compact ? 10 : 12,
-                    vertical: compact ? 9 : 10,
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Camera được dùng để chụp giấy tờ và xác minh khuôn mặt của bạn.',
                   ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFF8A3D),
-                    borderRadius: BorderRadius.circular(12),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Bạn có thể cấp quyền ngay bây giờ để tiếp tục xác minh.',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  child: const Text(
-                    'Privacy-First',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: onAllowCamera,
+                      child: const Text('Cho phép camera'),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: onLater,
+                      child: const Text('Để sau'),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class CameraPermissionDeniedView extends StatelessWidget {
+  const CameraPermissionDeniedView({
+    super.key,
+    required this.onOpenSettings,
+    required this.onBack,
+  });
+
+  final VoidCallback onOpenSettings;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Xác minh tài khoản')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Bật quyền camera để tiếp tục',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Hãy mở cài đặt và cho phép ứng dụng sử dụng camera.',
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('1. Mở cài đặt'),
+                  const SizedBox(height: 4),
+                  const Text('2. Chọn Quyền truy cập'),
+                  const SizedBox(height: 4),
+                  const Text('3. Bật Camera'),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: onOpenSettings,
+                      child: const Text('Mở cài đặt'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: onBack,
+                      child: const Text('Quay lại'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OcrLoadingView extends StatelessWidget {
+  const _OcrLoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 10),
+            Text('Đang chuẩn bị camera...'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OcrFatalErrorView extends StatelessWidget {
+  const _OcrFatalErrorView({required this.message, required this.onBackHome});
+
+  final String message;
+  final VoidCallback onBackHome;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Xác minh tài khoản')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: onBackHome,
+                child: const Text('Quay lại'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
