@@ -24,14 +24,6 @@ class _ReviewScreenState extends State<ReviewScreen> {
 
   bool _isSaving = false;
 
-  String get _cccdHash {
-    final raw = _cccdController.text.trim();
-    if (raw.isEmpty || !OcrService.isValidCccd(raw)) {
-      return '';
-    }
-    return OcrService.hashCccd(raw);
-  }
-
   @override
   void initState() {
     super.initState();
@@ -158,6 +150,38 @@ class _ReviewScreenState extends State<ReviewScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _showDocumentPreview() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Xem lại',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              const Text('Bản xem nhanh thông tin vừa nhận diện từ giấy tờ.'),
+              const SizedBox(height: 12),
+              Text('Họ và tên: ${_nameController.text.trim()}'),
+              const SizedBox(height: 6),
+              Text('Số CCCD: ${_cccdController.text.trim()}'),
+              const SizedBox(height: 6),
+              Text('Ngày sinh: ${_dobController.text.trim()}'),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   InputDecoration _fieldDecoration({
     required String label,
     required IconData icon,
@@ -175,14 +199,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
     final compact = AppLayout.isCompact(context);
     final pagePadding = AppLayout.pagePadding(context);
 
-    final hasSeedData =
-        _session.hasOcrData ||
-        _cccdController.text.trim().isNotEmpty ||
-        _nameController.text.trim().isNotEmpty ||
-        _dobController.text.trim().isNotEmpty;
-
     return Scaffold(
-      appBar: AppBar(title: const Text('Review OCR Data')),
+      appBar: AppBar(title: const Text('Xác minh tài khoản')),
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -215,40 +233,22 @@ class _ReviewScreenState extends State<ReviewScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Bước 2/5 - Kiểm tra thông tin OCR',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 16,
-                      ),
+                      'Bước 2/4',
+                      style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                     SizedBox(height: 6),
                     Text(
-                      'Xác minh dữ liệu trước khi tiếp tục Face Matching và ZKP.',
+                      'Kiểm tra thông tin',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 18,
+                      ),
                     ),
+                    SizedBox(height: 4),
+                    Text('Hãy kiểm tra và chỉnh sửa nếu có sai sót'),
                   ],
                 ),
               ),
-              if (!hasSeedData) ...[
-                SizedBox(height: compact ? 8 : 10),
-                Container(
-                  padding: EdgeInsets.all(compact ? 10 : 12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFF4E8),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Color(0xFFFF8A3D)),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Bạn chưa có dữ liệu OCR. Có thể nhập tay hoặc quay lại màn hình quét.',
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
               SizedBox(height: compact ? 12 : 16),
               TextField(
                 controller: _cccdController,
@@ -260,6 +260,15 @@ class _ReviewScreenState extends State<ReviewScreen> {
                 ),
               ),
               SizedBox(height: compact ? 10 : 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _showDocumentPreview,
+                  icon: const Icon(Icons.remove_red_eye_outlined),
+                  label: const Text('Xem lại'),
+                ),
+              ),
+              SizedBox(height: compact ? 8 : 10),
               TextField(
                 controller: _nameController,
                 textCapitalization: TextCapitalization.characters,
@@ -277,51 +286,23 @@ class _ReviewScreenState extends State<ReviewScreen> {
                   icon: Icons.calendar_month_outlined,
                 ),
               ),
-              SizedBox(height: compact ? 12 : 14),
-              Container(
-                padding: EdgeInsets.all(compact ? 10 : 12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF13343A),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: AnimatedSwitcher(
-                  duration: AppMotion.fast,
-                  switchInCurve: AppMotion.standard,
-                  switchOutCurve: Curves.easeIn,
-                  child: SelectableText(
-                    _cccdHash.isEmpty
-                        ? 'SHA-256 Hash: (chưa hợp lệ)'
-                        : 'SHA-256 Hash: $_cccdHash',
-                    key: ValueKey<String>(_cccdHash),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      color: Colors.white,
-                    ),
+              SizedBox(height: compact ? 18 : 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _isSaving ? null : _confirmAndSave,
+                  child: Text(
+                    _isSaving ? 'Đang xử lý...' : 'Thông tin đã đúng',
                   ),
                 ),
               ),
-              SizedBox(height: compact ? 18 : 24),
-              ElevatedButton.icon(
-                onPressed: _isSaving ? null : _confirmAndSave,
-                icon: _isSaving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.verified_user_outlined),
-                label: Text(
-                  _isSaving
-                      ? 'Đang lưu và chuyển sang bước quét mặt...'
-                      : 'Xác nhận & Tiếp tục quét khuôn mặt',
-                ),
-              ),
               SizedBox(height: compact ? 8 : 10),
-              OutlinedButton.icon(
-                onPressed: _isSaving ? null : _goBackToOcr,
-                icon: const Icon(Icons.restart_alt),
-                label: const Text('Quét lại CCCD'),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: _isSaving ? null : _goBackToOcr,
+                  child: const Text('Chụp lại giấy tờ'),
+                ),
               ),
             ],
           ),
