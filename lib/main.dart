@@ -62,7 +62,7 @@ class EkycApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'eKYC Simulator (Privacy-First)',
+      title: 'Xác minh tài khoản',
       theme: AppTheme.light(),
       initialRoute: _initialRoute,
       routes: {
